@@ -1,0 +1,12 @@
+{"record_type": "action", "case_id": "stable_success_1", "acceptance": "manual structured action executes stably", "action": {"tool": "get_weather", "args": {"city": "shanghai", "date": "tomorrow"}}}
+{"record_type":"executor_log","log":{"event": "tool_success", "tool": "get_weather", "status": "success", "error_code": null}}
+{"record_type": "observation", "case_id": "stable_success_1", "observation": {"status": "success", "tool": "get_weather", "args": {"city": "shanghai", "date": "tomorrow"}, "result": {"city": "Shanghai", "date": "tomorrow", "temperature_c": 30, "condition": "sunny"}, "error_code": null, "error_message": null}}
+{"record_type": "action", "case_id": "stable_success_2_same_input", "acceptance": "same structured action returns the same observation", "action": {"tool": "get_weather", "args": {"city": "shanghai", "date": "tomorrow"}}}
+{"record_type":"executor_log","log":{"event": "tool_success", "tool": "get_weather", "status": "success", "error_code": null}}
+{"record_type": "observation", "case_id": "stable_success_2_same_input", "observation": {"status": "success", "tool": "get_weather", "args": {"city": "shanghai", "date": "tomorrow"}, "result": {"city": "Shanghai", "date": "tomorrow", "temperature_c": 30, "condition": "sunny"}, "error_code": null, "error_message": null}}
+{"record_type": "action", "case_id": "schema_missing_required", "acceptance": "schema-level error is triggered and captured", "action": {"tool": "get_weather", "args": {"city": "shanghai"}}}
+{"record_type":"executor_log","log":{"event": "schema_error", "tool": "get_weather", "status": "error", "error_code": "MISSING_REQUIRED_FIELD"}}
+{"record_type": "observation", "case_id": "schema_missing_required", "observation": {"status": "error", "tool": "get_weather", "args": {"city": "shanghai"}, "result": null, "error_code": "MISSING_REQUIRED_FIELD", "error_message": "Missing required field: date"}}
+{"record_type": "action", "case_id": "schema_invalid_format", "acceptance": "schema-level format error is triggered and captured", "action": {"tool": "get_order", "args": {"order_id": "1001"}}}
+{"record_type":"executor_log","log":{"event": "schema_error", "tool": "get_order", "status": "error", "error_code": "INVALID_FIELD_FORMAT"}}
+{"record_type": "observation", "case_id": "schema_invalid_format", "observation": {"status": "error", "tool": "get_order", "args": {"order_id": "1001"}, "result": null, "error_code": "INVALID_FIELD_FORMAT", "error_message": "order_id has invalid format"}}
