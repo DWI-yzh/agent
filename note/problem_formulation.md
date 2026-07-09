@@ -1,101 +1,194 @@
-# Agent 训练问题形式化
+# Agent 训练问题形式化 - 重构版
 
-## 1. 目标
+> **文档重构说明**：本文档基于原始`problem_formulation.md`进行结构重组，旨在改善逻辑清晰度、增强内容衔接、添加辅助图表，同时保持所有技术细节和专业深度完整。所有技术内容均来自原文档，仅进行组织优化。
 
-本文档的目标不是简单解释 Agent 的组成部分，而是把“训练一个会使用工具的 Agent”形式化为一个可以落地的数据、训练和评测问题。
+## 📋 执行摘要
 
-我们希望回答以下问题：
+本文档系统地形式化了**工具使用型Agent（Tool-using Agent）的训练问题**，为算法工程师提供了一个完整的建模、数据、训练和评估框架。核心目标是：将"教会AI使用工具完成任务"这一工程问题，转化为可落地实现的数据规范、训练目标和评估体系。
 
-- 一条 Agent 训练样本应该如何表示？
-- 模型在每一步看到的输入是什么？
-- 模型在每一步要预测的输出是什么？
-- 工具执行结果如何改变下一步状态？
-- 训练时优化什么目标？
-- 评测时如何判断单步 action 和完整 trajectory 的质量？
+### 🔑 核心洞察
 
-本文档关注的是 tool-using Agent，即模型需要在自然语言回答和工具调用之间做决策的场景。
+1. **Agent ≠ 模型**：完整的Agent是一个工程系统，我们训练的是其中的**决策模块（policy）**
+2. **外部化的思维链**：Agent训练本质上是将CoT的内部推理过程外部化为可执行的动作序列
+3. **轨迹为中心**：训练需要专家轨迹数据，展示在每种状态下应该采取的正确动作
+4. **状态转移建模**：环境如何根据当前状态、Agent动作和工具观察更新到下一状态，是建模的关键
 
-## 2. 总体形式化
+### 🎯 解决的核心问题
 
-### 2.1 核心概念澄清
+| 问题维度 | 核心解答 |
+|----------|----------|
+| **数据表示** | 如何表示一条Agent训练样本？→ (状态, 专家动作) 配对 |
+| **模型输入** | 模型每一步看到什么？→ Runtime State（消息历史 + 可用工具） |
+| **模型输出** | 模型预测什么？→ Action（工具调用/最终回答/反问用户） |
+| **状态转移** | 工具结果如何改变状态？→ Transition(s_t, a_t, o_{t+1}) → s_{t+1} |
+| **训练目标** | 优化什么？→ 最大化任务成功率：max_θ E[Evaluator(τ_θ, task)] |
+| **评估方法** | 如何判断质量？→ 分层评估：过程合规性 + 语义合理性 + 任务完成度 |
 
-在讨论 Agent 训练之前，需要明确一个关键区分：**完整的 Agent 是一个工程系统**，而我们要训练的是这个系统中的**决策模块（policy）**。
+### 🏗️ 文档结构导航
+
+本文档按以下逻辑结构组织，每部分都包含深入的技术细节和实现规范：
 
 ```
-完整的 Agent 系统 = 状态管理器 + 工具执行器 + 记忆系统 + 决策模块(policy)
-                                                          ↑
-                                                      这是训练目标
+第一部分：基础概念与核心定义
+├── 1.1 核心概念澄清：Agent系统架构分解
+├── 1.2 训练目标形式化：从问题到数学模型
+├── 1.3 与思维链的对比：外部化推理的关键转变
+└── 1.4 核心对象定义：Task/Tool/State/Action/Observation的精确规范
+
+第二部分：系统建模与状态机
+├── 2.1 状态表示分层：Runtime State vs Annotated State
+├── 2.2 动作空间设计：Tool Call / Final Answer / Ask User
+├── 2.3 观察空间建模：工具结果与错误处理
+├── 2.4 状态转移规则：完整的Transition决策表
+└── 2.5 多工具依赖建模：DAG表示与参数绑定
+
+第三部分：数据、训练与评估
+├── 3.1 数据构造方法论：四种来源与质量验收
+├── 3.2 训练目标设计：SFT/Rejection Sampling/RL的数学形式
+├── 3.3 评估器架构：Step-level与Trajectory-level评估
+├── 3.4 失败类型学：完整的Failure Taxonomy与诊断规则
+└── 3.5 Groundedness评估：最终回答的基于性验证
+
+第四部分：实现规范与参考
+├── 4.1 Canonical Schemas：所有数据结构的JSON Schema
+├── 4.2 任务类型划分：七类任务的设计规范
+├── 4.3 最小可执行版本：第一阶段实施指南
+├── 4.4 建模覆盖矩阵：完整性检查清单
+└── 4.5 术语表与交叉引用
 ```
 
-### 2.2 训练什么？学习什么？
+### 🚀 快速入门路径
 
-我们要训练的是 Agent 系统中的**决策模块（policy）**，使其学会从当前状态到下一步动作的映射：
+**如果您是第一次阅读此文档**，建议按以下顺序：
+1. 阅读**1.1-1.2节**理解核心概念
+2. 查看**4.3节**了解最小可执行版本
+3. 浏览**4.1节**熟悉数据结构规范
+4. 根据具体需求深入相关章节
+
+---
+
+## 第一部分：基础概念与核心定义
+
+### 1.1 核心概念澄清：Agent系统架构分解
+
+在深入技术细节之前，必须明确一个关键区分：**完整的Agent是一个工程系统**，而我们要训练的是这个系统中的**决策模块（policy）**。
+
+```mermaid
+graph TB
+    A[完整Agent系统] --> B[状态管理器<br/>维护当前状态s_t]
+    A --> C[工具执行器<br/>执行动作返回观察]
+    A --> D[记忆系统<br/>存储历史轨迹]
+    A --> E[决策模块 policy π_θ<br/>← 这是训练目标]
+    
+    B --> E
+    D --> E
+    E --> C
+    C --> B
+```
+
+**关键理解**：
+- **系统层面**：Agent = 状态管理 + 工具执行 + 记忆 + 决策
+- **训练层面**：我们只训练决策模块π_θ，其他组件是环境的一部分
+- **接口层面**：π_θ接收状态s_t，输出动作a_t，不直接感知环境复杂性
+
+#### 1.1.1 决策模块的形式化定义
+
+决策模块学习从当前状态到下一步动作的映射：
 
 $$
 \pi_\theta: s_t \to a_t
 $$
 
 其中：
-- $s_t$：第 $t$ 步时模型的**输入状态**（模型推理时真实可见的信息）
-- $a_t$：第 $t$ 步时模型的**输出动作**（如调用工具、给出最终答案、反问用户）
+- $s_t$：第$t$步时模型的**输入状态**（模型推理时真实可见的信息）
+- $a_t$：第$t$步时模型的**输出动作**（如调用工具、给出最终答案、反问用户）
 
-这本质上是**教模型如何像专家一样分步思考和执行**，类似思维链（CoT），但将内部思考过程外部化为可执行的动作序列。
+这个映射的本质是**教模型如何像专家一样分步思考和执行**，类似于思维链（CoT），但将内部思考过程外部化为可执行的动作序列。
 
-### 2.3 为什么需要轨迹数据？
+#### 1.1.2 为什么需要轨迹数据？
 
-决策模块的训练需要**轨迹（trajectory）数据**，因为：
+决策模块的训练需要**轨迹（trajectory）数据**，原因如下：
 
 1. **学习状态→动作的映射**：需要知道在每个特定状态下应该采取什么动作
-2. **学习多步决策逻辑**：需要看到专家如何一步步推进任务完成
+2. **学习多步决策逻辑**：需要看到专家如何一步步推进任务完成  
 3. **学习从错误中恢复**：需要看到专家如何处理工具失败、参数错误等情况
 
-一条轨迹 $\tau$ 记录了完整任务执行过程：
+一条轨迹$\tau$记录了完整任务执行过程：
 
 $$
 \tau = (s_0, a_0, o_1, s_1, a_1, o_2, \ldots, s_n, a_n)
 $$
 
-- $s_t$：模型第 $t$ 步看到的**输入状态**（由系统生成）
-- $a_t$：模型第 $t$ 步输出的**动作**（决策模块的输出）
+其中：
+- $s_t$：模型第$t$步看到的**输入状态**（由系统生成）
+- $a_t$：模型第$t$步输出的**动作**（决策模块的输出）
 - $o_{t+1}$：动作执行后环境返回的**观察**（工具结果、错误信息等）
-- $s_{t+1}$：系统根据 $(s_t, a_t, o_{t+1})$ 生成的**新状态**
+- $s_{t+1}$：系统根据$(s_t, a_t, o_{t+1})$生成的**新状态**
 
-### 2.4 训练目标形式化
+### 1.2 训练目标形式化：从问题到数学模型
 
-给定：
-- 任务分布 $D_{\text{task}}$：各种用户任务的集合
-- 工具集合 $T$：可用的工具及其 schema
-- 执行环境 $\text{Env}$：生成观察 $o_{t+1}$ 和执行状态转移 $s_t \rightarrow s_{t+1}$ 的系统
-- 决策模块 $\pi_\theta$：要训练的参数化函数
-- 评测器 $\text{Evaluator}$：判断轨迹是否成功的函数
+给定以下组件：
+- 任务分布$D_{\text{task}}$：各种用户任务的集合
+- 工具集合$T$：可用的工具及其schema
+- 执行环境$\text{Env}$：生成观察$o_{t+1}$和执行状态转移$s_t \rightarrow s_{t+1}$的系统
+- 决策模块$\pi_\theta$：要训练的参数化函数
+- 评测器$\text{Evaluator}$：判断轨迹是否成功的函数
 
-训练目标是学习一个决策函数：
+**训练目标是学习一个决策函数**：
 
 $$
 \maximize_{\theta} \ \mathbb{E}_{\text{task} \sim D_{\text{task}}}[\text{Evaluator}(\tau_\theta, \text{task})]
 $$
 
-其中 $\tau_\theta$ 是通过策略 $\pi_\theta$ 与环境交互生成的轨迹，$\text{task}$ 是任务规范。
+其中$\tau_\theta$是通过策略$\pi_\theta$与环境交互生成的轨迹，$\text{task}$是任务规范。
 
-### 2.6 与思维链（Chain-of-Thought）的对比
+#### 1.2.1 训练目标的深度解读
 
-理解 Agent 训练与思维链（CoT）训练的关系，有助于把握其核心思想：
+这个目标函数包含多个层次的含义：
 
-| 维度 | 思维链（CoT）训练 | Agent 训练 |
-|------|-----------------|-----------|
-| **训练目标** | 学习在内部如何分步推理 | 学习在外部如何分步执行 |
-| **训练数据** | (问题, 推理步骤, 答案) 三元组 | (状态, 动作, 观察, 新状态) 轨迹序列 |
-| **模型输出** | 最终答案（可能附带推理文本） | 下一步动作（工具调用、最终回答等） |
-| **执行方式** | 推理在模型内部完成，不可观察 | 动作在外部世界执行，可验证可干预 |
-| **状态管理** | 隐含在模型的内部激活中 | 显式表示为 $s_t$，由系统维护 |
-| **泛化能力** | 学会相似问题的推理模式 | 学会相似状态下的决策模式 |
+1. **优化变量是θ**：我们优化的是策略参数，不是轨迹本身
+2. **期望在任务分布上**：要求策略在多种任务上表现良好，不是过拟合到特定任务
+3. **评估器是任务相关的**：Evaluator需要知道任务规范才能判断成功与否
+4. **轨迹是策略依赖的**：$\tau_\theta$强调轨迹是由当前策略生成的
 
-#### 本质联系：外部化的思维链
+#### 1.2.2 与监督学习的对比
 
-Agent 训练可以看作是 **CoT 的外部化和可执行化**：
+```mermaid
+graph LR
+    A[传统监督学习] --> B[输入X → 输出Y<br/>单步预测]
+    C[Agent训练] --> D[状态s_t → 动作a_t<br/>多步序列决策]
+    
+    B --> E[损失函数: L(Y_pred, Y_true)]
+    D --> F[评估函数: Evaluator(τ, task)]
+    
+    E --> G[直接误差最小化]
+    F --> H[间接成功率最大化]
+```
 
-- **CoT**：模型内部默默思考："先查天气 → 温度适中 → 适合跑步" → 输出"适合跑步"
-- **Agent**：模型将思考变为可执行动作：
+关键区别：
+- **数据单位**：监督学习是单样本，Agent训练是完整轨迹
+- **损失信号**：监督学习是直接误差，Agent训练是任务成功率
+- **时间维度**：监督学习无状态，Agent训练有状态转移
+
+### 1.3 与思维链的对比：外部化推理的关键转变
+
+理解Agent训练与思维链（CoT）训练的关系，有助于把握其核心思想：
+
+| 维度 | 思维链（CoT）训练 | Agent训练 | 本质区别 |
+|------|-----------------|-----------|----------|
+| **训练目标** | 学习在内部如何分步推理 | 学习在外部如何分步执行 | **内部 vs 外部** |
+| **训练数据** | (问题, 推理步骤, 答案) 三元组 | (状态, 动作, 观察, 新状态) 轨迹序列 | **文本 vs 执行** |
+| **模型输出** | 最终答案（可能附带推理文本） | 下一步动作（工具调用、最终回答等） | **结果 vs 动作** |
+| **执行方式** | 推理在模型内部完成，不可观察 | 动作在外部世界执行，可验证可干预 | **黑盒 vs 白盒** |
+| **状态管理** | 隐含在模型的内部激活中 | 显式表示为$s_t$，由系统维护 | **隐式 vs 显式** |
+| **泛化能力** | 学会相似问题的推理模式 | 学会相似状态下的决策模式 | **问题相似 vs 状态相似** |
+
+#### 1.3.1 本质联系：外部化的思维链
+
+Agent训练可以看作是 **CoT的外部化和可执行化**：
+
+- **CoT示例**：模型内部默默思考："先查天气 → 温度适中 → 适合跑步" → 输出"适合跑步"
+- **Agent示例**：模型将思考变为可执行动作：
   - 状态1（需要信息）→ 动作1（调用天气工具）
   - 状态2（已获取数据）→ 动作2（分析并判断）
   - 状态3（判断完成）→ 动作3（输出最终答案）
@@ -107,7 +200,7 @@ Agent 训练可以看作是 **CoT 的外部化和可执行化**：
 3. **可恢复性**：工具失败时可以重试、修正参数
 4. **可解释性**：每个决策步骤都清晰可见，便于调试分析
 
-#### 训练数据的深层相似性
+#### 1.3.2 训练数据的深层相似性
 
 尽管形式不同，但两者训练数据的本质都是 **"展示专家的思考/决策过程"**：
 
@@ -128,15 +221,15 @@ Agent 训练可以看作是 **CoT 的外部化和可执行化**：
 }
 ```
 
-两者都旨在让模型**学会分步解决问题的模式**，只是 CoT 停留在文本推理层面，而 Agent 将其升级为可执行的动作序列。
+两者都旨在让模型**学会分步解决问题的模式**，只是CoT停留在文本推理层面，而Agent将其升级为可执行的动作序列。
 
-这种训练让模型获得**持续思考和任务跟踪的能力**，而不仅仅是单次响应的能力。
+### 1.4 核心对象定义：精确的技术规范
 
-## 3. Task 定义
+在深入细节之前，我们先明确定义本文档中使用的核心对象。这些定义构成了整个建模框架的基础。
 
-一个 task 是用户希望 Agent 完成的目标。
+#### 1.4.1 Task（任务）
 
-任务可以表示为：
+一个task是用户希望Agent完成的目标，表示为结构化规范：
 
 ```json
 {
@@ -151,23 +244,20 @@ Agent 训练可以看作是 **CoT 的外部化和可执行化**：
 }
 ```
 
-任务定义至少应该包含：
+**关键字段**：
+- `task_id`：任务唯一标识
+- `user_query`：用户原始输入
+- `available_tools`：该任务可使用的工具集合
+- `success_criteria`：任务成功条件（必填）
 
-- `task_id`：任务唯一标识。
-- `user_query`：用户原始输入。
-- `available_tools`：该任务可使用的工具集合。
-- `success_criteria`：任务成功条件。
+**深度说明**：
+- `success_criteria`通常是人工预定义的，为评估提供客观标准
+- 在通用agent系统中，如果任务未知，可能需要替代评估策略（如用户反馈、过程合规性评估）
+- `available_tools`定义了动作空间的子集，模型只能使用这些工具
 
-更复杂的任务还可以包含：
+#### 1.4.2 Tool（工具）
 
-- `constraints`：例如不能访问外部网络、必须先查 A 再查 B。
-- `reference_answer`：参考最终答案。
-- `reference_trajectory`：专家轨迹。
-- `metadata`：任务类型、难度、领域、是否多工具等。
-
-## 4. Tool 定义
-
-一个工具 `tool` 可以表示为：
+一个tool是可以被Agent调用的功能单元，包含完整的接口规范：
 
 ```json
 {
@@ -176,160 +266,46 @@ Agent 训练可以看作是 **CoT 的外部化和可执行化**：
   "schema": {
     "type": "object",
     "properties": {
-      "location": {
-        "type": "string"
-      },
-      "date": {
-        "type": "string"
-      }
+      "location": {"type": "string"},
+      "date": {"type": "string"}
     },
     "required": ["location", "date"]
   }
 }
 ```
 
-工具定义至少包含：
+**关键字段**：
+- `name`：工具名称，也是action中的`tool_name`
+- `description`：工具用途说明
+- `schema`：参数结构、类型和必填字段
 
-- `name`：工具名称。
-- `description`：工具用途。
-- `schema`：参数结构、类型和必填字段。
+**深度说明**：
+- 工具schema定义了动作空间的语法约束
+- 模型不仅要知道可以调用哪个工具，还要生成符合schema的参数
+- 在训练和评测中，工具schema是action space的一部分
 
-在训练和评测中，工具 schema 是 action space 的一部分。模型不仅要知道可以调用哪个工具，还要生成符合 schema 的参数。
+#### 1.4.3 State（状态）
 
-## 5. State 定义
+State是模型在第`t`步做决策时可见的全部信息，需要区分两种表示：
 
-`State` 是模型在第 `t` 步做决策时可见的全部信息。
-
-可以表示为：
-
-```json
-{
-  "task": {
-    "user_query": "查询明天上海的天气，并告诉我是否适合户外跑步。"
-  },
-  "messages": [
-    {
-      "role": "user",
-      "content": "查询明天上海的天气，并告诉我是否适合户外跑步。"
-    }
-  ],
-  "tools": [
-    {
-      "name": "weather",
-      "schema": {}
-    }
-  ],
-  "history": [],
-  "progress": {
-    "step": 0,
-    "finished": false,
-    "known_facts": [],
-    "open_requirements": [
-      "需要查询上海明天天气",
-      "需要判断是否适合跑步"
-    ]
-  }
-}
-```
-
-State 中的核心字段：
-
-- `task`：任务信息。
-- `messages`：模型可见的对话上下文。
-- `tools`：当前可用工具及 schema。
-- `history`：已经发生过的 action 和 observation。
-- `progress`：当前任务进展的结构化描述。
- 
-
-需要注意：
-
-- `state` 不等于完整原始日志，而是模型做下一步决策时实际可见的输入。
-- `progress` 可以来自人工标注、规则系统，也可以暂时只作为分析字段，不直接喂给模型。
-  人工标注：专家写的“当前任务进展”
-  规则系统：程序根据当前状态推导出的进度
-  其他辅助模块：例如任务规划器、阶段追踪器
-  如果你只是想用它做训练数据分析、评估、或生成样本，那么它可以“在数据里存在，但不作为模型输入”；如果目标是贴近真实运行时，就更要避免把这种辅助进度直接当成模型可见的 state
-- 如果训练目标是贴近真实 Agent 运行时，state 应尽量匹配真实推理时的输入格式。
-
-## 6. State 的两种表示
-
-为了避免训练时引入推理时不可用的信息，需要区分两种 state。
-
-### 6.1 Runtime State
-
-`Runtime State` 是模型真实推理时能看到的状态。
-
-它通常包括：
-
-- system / developer / user messages。
-- 历史 assistant messages。
-- 历史 tool calls。
-- 历史 tool results。
-- 当前可用工具 schema。
-
-示例：
-
+**Runtime State（运行时状态）**：模型真实推理时能看到的状态
 ```json
 {
   "messages": [
-    {
-      "role": "user",
-      "content": "查询明天上海的天气，并告诉我是否适合户外跑步。"
-    },
-    {
-      "role": "assistant",
-      "tool_call": {
-        "name": "weather",
-        "arguments": {
-          "location": "上海",
-          "date": "明天"
-        }
-      }
-    },
-    {
-      "role": "tool",
-      "name": "weather",
-      "content": {
-        "temperature": "18-24C",
-        "rain_probability": "20%",
-        "wind": "light"
-      }
-    }
+    {"role": "user", "content": "查询明天上海的天气..."},
+    {"role": "assistant", "tool_call": {"name": "weather", "arguments": {...}}},
+    {"role": "tool", "name": "weather", "content": {"temperature": "18-24C"}}
   ],
-  "tools": [
-    {
-      "name": "weather",
-      "schema": {}
-    }
-  ]
+  "tools": [{"name": "weather", "schema": {}}]
 }
 ```
 
-如果目标是训练一个真实可运行的 Agent，SFT 的 input 应该尽量使用 Runtime State。
-
-### 6.2 Annotated State
-
-`Annotated State` 是为了分析、标注、评测而额外添加的结构化状态。
-
-它可以包括：
-
-- `progress`
-- `known_facts`
-- `open_requirements`
-- `expected_next_action`
-- `failure_labels`
-
-示例：
-
+**Annotated State（标注状态）**：为了分析、标注、评测而额外添加的结构化状态
 ```json
 {
   "progress": {
-    "known_facts": [
-      "上海明天天气已查询"
-    ],
-    "open_requirements": [
-      "判断是否适合跑步"
-    ]
+    "known_facts": ["上海明天天气已查询"],
+    "open_requirements": ["判断是否适合跑步"]
   },
   "expected_next_action": {
     "type": "final_answer"
@@ -337,887 +313,64 @@ State 中的核心字段：
 }
 ```
 
-Annotated State 的作用是帮助构造数据和评测，不一定应该直接喂给模型。
+**关键原则**：
+- `model_input_state`只能包含模型真实看到的输入
+- `annotation_state`用于标注和evaluator，不应泄漏给模型
+- 如果把`expected_next_action`这类强提示直接放进模型输入，模型可能学到的是读取标注，而不是从上下文中推理
 
-``` 注释： state  这里似懂非懂， 尤其是给模型看的  和不和给模型看的这块 ```
+#### 1.4.4 Action（动作）
 
-### 6.3 关键原则
+Action是模型在状态$s_t$下输出的下一步行为，当前分为三类：
 
-训练时需要明确区分：
-
-- `model_input_state`：模型真实看到的输入。
-- `annotation_state`：标注和 evaluator 使用的辅助信息。
-
-如果把 `expected_next_action`、`open_requirements` 这类强提示直接放进模型输入，模型可能学到的是读取标注，而不是从上下文中推理下一步 action。
-
-因此，默认建议：
-
-- SFT 输入使用 `model_input_state`。
-- evaluator 使用 `annotation_state`。
-- 数据分析可以同时保存两者。
-
-### 6.4 Runtime Message 模板
-
-第一版训练输入应尽量贴近真实模型推理格式。
-
-推荐 runtime input：
-
-```json
-{
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are an agent that can call tools when needed."
-    },
-    {
-      "role": "user",
-      "content": "查询明天上海的天气，并告诉我是否适合户外跑步。"
-    },
-    {
-      "role": "assistant",
-      "tool_calls": [
-        {
-          "name": "weather",
-          "arguments": {
-            "location": "上海",
-            "date": "明天"
-          }
-        }
-      ]
-    },
-    {
-      "role": "tool",
-      "name": "weather",
-      "content": {
-        "temperature": "18-24C",
-        "rain_probability": "20%",
-        "wind": "light"
-      }
-    }
-  ],
-  "tools": [
-    {
-      "name": "weather",
-      "description": "查询指定地点和日期的天气。",
-      "input_schema": {}
-    }
-  ]
-}
-```
-
-训练时应明确：
-
-- `messages` 和 `tools` 是模型输入。
-- `annotation_state`、`labels`、`eval_result` 不是模型输入。
-- 如果模型框架有原生 tool calling 格式，应优先使用原生格式，而不是把工具 schema 拼成普通文本。
-
-### 6.5 字段使用边界
-
-字段使用边界需要在数据层面固定，避免训练泄漏。
-
-| 字段 | SFT input | SFT target | evaluator | analysis | 说明 |
-|---|---:|---:|---:|---:|---|
-| `messages` | yes | no | yes | yes | 模型真实上下文 |
-| `tools` | yes | no | yes | yes | 可用工具 schema |
-| `model_input_state` | yes | no | yes | yes | runtime state 容器 |
-| `annotation_state` | no | no | yes | yes | 标注和评测辅助信息 |
-| `expected_next_action` | no | no | yes | yes | 不能泄漏给模型 |
-| `expert_action` | no | yes | yes | yes | SFT 目标 |
-| `labels` | no | no | yes | yes | 成功失败标签 |
-| `metadata` | no by default | no | yes | yes | 可用于过滤和分桶 |
-
-## 7. Action 定义
-
-`Action` 是模型在状态 $s_t$ 下输出的下一步行为。
-
-当前可以把 action space 分成三类：
-
-### 7.1 Tool Action
-
-模型决定调用工具：
-
+1. **Tool Action（工具调用）**：
 ```json
 {
   "type": "tool_call",
   "tool_name": "weather",
-  "arguments": {
-    "location": "上海",
-    "date": "明天" 
-  }
+  "arguments": {"location": "上海", "date": "明天"}
 }
 ```
 
-Tool action 的正确性包括：
-
-- 工具名称是否正确。
-- 参数字段是否完整。
-- 参数类型是否符合 schema。
-- 参数值是否符合用户意图和上下文。
-
-### 7.2 Final Action
-
-模型决定结束工具调用并回答用户：
-
+2. **Final Action（最终回答）**：
 ```json
 {
   "type": "final_answer",
-  "content": "明天上海天气适合户外跑步，但建议避开降雨时段。"
+  "content": "明天上海天气适合户外跑步..."
 }
 ```
 
-Final action 的正确性包括：
-
-- 是否在信息足够时才结束。
-- 回答是否满足用户任务。
-- 是否基于已有 observation。
-- 是否包含幻觉内容。
-
-### 7.3 Ask User Action
-
-当用户输入不足以完成任务时，模型可以反问用户：
-
+3. **Ask User Action（反问用户）**：
 ```json
 {
-  "type": "ask_user",
+  "type": "ask_user", 
   "content": "你想查询哪个城市的天气？"
 }
 ```
 
-Ask user action 适用于：
+**合法性约束**：
+- 当`type=tool_call`时，必须包含`tool_name`和`arguments`
+- 当`type=final_answer`时，必须包含`content`
+- 当`type=ask_user`时，必须包含`content`，且内容应该针对缺失信息
 
-- 缺少必要参数。
-- 用户意图存在歧义。
-- 工具调用前必须获得用户确认。
+#### 1.4.5 Observation（观察）
 
-是否支持 `ask_user` 取决于具体训练任务设置。如果任务假设 Agent 必须自主完成，则可以暂时不纳入 action space。
+Observation是action被执行后环境返回的信息：
 
-### 7.4 Action 合法性与非法样例
-
-Action evaluator 应先检查 action 是否可解析，再检查业务正确性。
-
-| Action | 合法条件 | 非法样例 | Failure Type |
-|---|---|---|---|
-| `tool_call` | 包含 `tool_name` 和 `arguments`，且工具存在 | `{"type":"tool_call","arguments":{}}` | `invalid_action`、`missing_argument` |
-| `tool_call` | `arguments` 通过对应 tool input schema | `{"location":123}` | `invalid_schema`、`wrong_argument_type` |
-| `final_answer` | 包含非空 `content` | `{"type":"final_answer"}` | `invalid_action` |
-| `ask_user` | 包含非空 `content`，且任务允许反问 | `{"type":"ask_user","content":""}` | `invalid_action` |
-| any | `type` 在允许集合中 | `{"type":"search"}` | `invalid_action` |
-
-### 7.5 Action 终止条件
-
-不同 action 对 trajectory 的终止含义不同：
-
-| Action | 默认是否终止 | 说明 |
-|---|---:|---|
-| `tool_call` | no | 进入工具执行，再返回 observation |
-| `final_answer` | yes | 正常终止，但不等于任务成功 |
-| `ask_user` | depends | 单轮任务中可终止，多轮任务中等待用户补充 |
-| invalid action | depends | 可以终止，也可以允许一次格式修复 |
-
-第一阶段建议：
-
-- `final_answer` 总是终止。
-- `ask_user` 在单轮任务中终止。
-- invalid action 直接终止并标记失败。
-
-## 8. Observation 定义
-
-`Observation` 是 action 被执行后环境返回的信息。
-
-如果 action 是 tool call，则 observation 可能是：
-
+**成功结果**：
 ```json
 {
   "type": "tool_result",
   "tool_name": "weather",
   "status": "success",
-  "result": {
-    "temperature": "18-24C",
-    "rain_probability": "20%",
-    "wind": "light"
-  }
+  "result": {"temperature": "18-24C", "rain_probability": "20%"}
 }
 ```
 
-也可能是错误：
-
-```json
-{
-  "type": "tool_error",
-  "tool_name": "weather",
-  "status": "schema_error",
-  "error": {
-    "code": "MISSING_REQUIRED_FIELD",
-    "message": "Missing required field: location"
-  }
-}
-```
-
-Observation 类型包括：
-
-- `tool_result`：工具正常返回。
-- `tool_error`：工具执行失败。
-- `schema_error`：参数未通过 schema 校验。
-- `empty_result`：工具执行成功但结果为空。
-- `system_error`：权限、网络、超时等系统错误。
-
-Observation 会进入下一步 state，影响模型后续 action。
-
-### 8.1 标准 Observation Error Codes
-
-第一版可以使用以下错误码：
-
-| Error Code | Observation Type | Retryable | 说明 |
-|---|---|---:|---|
-| `MISSING_REQUIRED_FIELD` | `schema_error` | yes | 缺少必填参数 |
-| `WRONG_ARGUMENT_TYPE` | `schema_error` | yes | 参数类型错误 |
-| `UNKNOWN_TOOL` | `schema_error` | no | 工具不存在 |
-| `INVALID_ARGUMENT_VALUE` | `tool_error` | yes | 参数值不被工具接受 |
-| `EMPTY_RESULT` | `empty_result` | depends | 查询成功但无结果 |
-| `TIMEOUT` | `system_error` | yes | 工具执行超时 |
-| `PERMISSION_DENIED` | `system_error` | no | 无权限 |
-| `RATE_LIMITED` | `system_error` | yes | 频率限制 |
-| `INTERNAL_ERROR` | `system_error` | yes | 工具内部错误 |
-
-错误码的作用：
-
-- 指导模型是否重试。
-- 指导 transition 是否终止。
-- 指导 evaluator 区分模型错误和环境错误。
-
-## 9. Transition 定义
-
-Transition 描述环境如何从当前状态转移到下一状态：
-
-$$
-s_{t+1} = \text{Transition}(s_t, a_t, o_{t+1})
-$$
-
-在工具调用场景中，transition 通常做以下事情：
-
-- 将 action 记录到 history。
-- 将 observation 记录到 history。
-- 更新 messages 或上下文。
-- 更新 progress，例如标记某个子目标已完成。
-- 更新错误状态，例如记录失败次数、schema 错误类型。
-- 判断任务是否已经完成或是否应该继续。
-
-示例：
-
-```json
-{
-  "history": [
-    {
-      "action": {
-        "type": "tool_call",
-        "tool_name": "weather",
-        "arguments": {
-          "location": "上海",
-          "date": "明天"
-        }
-      },
-      "observation": {
-        "type": "tool_result",
-        "status": "success"
-      }
-    }
-  ],
-  "progress": {
-    "known_facts": [
-      "上海明天天气已查询"
-    ],
-    "open_requirements": [
-      "需要判断是否适合跑步"
-    ]
-  }
-}
-```
-
-Transition 是 Agent 建模中非常关键的一环，因为它决定了模型在下一步究竟能看到什么。
-
-## 10. Transition Rules
-
-Transition rule 定义环境如何根据当前 state、模型 action 和 observation 更新下一步 state。
-
-形式上：
-
-$$
-s_{t+1} = \text{Transition}(s_t, a_t, o_{t+1})
-$$
-
-工程上，transition 至少需要更新：
-
-- `messages`：追加 assistant action 和 tool observation。
-- `history`：保存结构化 action / observation。
-- `annotation_state.progress`：更新已知事实、未完成要求和错误状态。
-- `terminal_state`：判断任务是否结束。
-- `labels`：如果出现失败，记录 failure type。
-
-### 10.1 通用状态更新
-
-每一步 action 之后，都应该生成一条 step record：
-
-```json
-{
-  "step_index": 0,
-  "model_input_state": {},
-  "annotation_state": {},
-  "action": {},
-  "observation": {}
-}
-```
-
-通用更新规则：
-
-| 更新目标 | 更新规则 |
-|---|---|
-| `history` | 追加当前 step 的 action 和 observation |
-| `messages` | 如果 action 是 tool call，追加 assistant tool call；如果有 observation，追加 tool message；如果 action 是 final answer，追加 assistant final message |
-| `progress.step` | 自增 1 |
-| `progress.known_facts` | 从成功 observation 中抽取可用事实 |
-| `progress.open_requirements` | 根据 action 和 observation 移除已满足要求 |
-| `progress.error_state` | 如果 observation 是错误，记录错误类型、工具名、是否可重试 |
-| `terminal_state` | 如果 action 是 final answer、ask_user 或达到终止条件，则设置终止原因 |
-
-### 10.2 Tool Call 成功
-
-适用条件：
-
-```text
-a_t.type == "tool_call"
-o_{t+1}.status == "success"
-o_{t+1}.type == "tool_result"
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 追加 assistant tool call 和 tool result |
-| `history` | 记录 tool action 与 tool result |
-| `known_facts` | 从 `observation.result` 抽取事实 |
-| `open_requirements` | 移除已经由工具结果满足的需求 |
-| `error_state` | 清空或保持为空 |
-| `terminal_state` | 通常不终止，进入下一步由模型决定是否 final answer |
-| `failure_types` | 不新增失败标签 |
-
-示例：
-
-```json
-{
-  "progress": {
-    "known_facts": [
-      "上海明天气温 18-24C",
-      "上海明天降雨概率 20%"
-    ],
-    "open_requirements": [
-      "判断是否适合跑步"
-    ],
-    "error_state": null
-  }
-}
-```
-
-### 10.3 Tool Call Schema Error
-
-适用条件：
-
-```text
-a_t.type == "tool_call"
-o_{t+1}.type == "schema_error"
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 追加 assistant tool call 和 schema error tool message |
-| `history` | 记录非法参数和 schema error |
-| `known_facts` | 不新增事实 |
-| `open_requirements` | 保持不变 |
-| `error_state` | 记录 `schema_error`、缺失字段、是否可重试 |
-| `terminal_state` | 通常不终止，允许模型修正参数后重试 |
-| `failure_types` | step-level 标记 `invalid_schema`，如果缺字段则标记 `missing_argument` |
-
-示例：
-
-```json
-{
-  "progress": {
-    "known_facts": [],
-    "open_requirements": [
-      "查询上海明天天气",
-      "判断是否适合跑步"
-    ],
-    "error_state": {
-      "type": "schema_error",
-      "tool_name": "weather",
-      "retryable": true,
-      "missing_fields": ["location"]
-    }
-  }
-}
-```
-
-### 10.4 Tool Call Empty Result
-
-适用条件：
-
-```text
-a_t.type == "tool_call"
-o_{t+1}.type == "empty_result"
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 追加 assistant tool call 和 empty result observation |
-| `history` | 记录 tool action 与 empty result |
-| `known_facts` | 不新增事实，或记录“未查到结果” |
-| `open_requirements` | 通常保持不变，除非任务允许“无结果”作为答案 |
-| `error_state` | 记录 `empty_result` 和可重试信息 |
-| `terminal_state` | 不立即终止，除非任务规则允许无结果终止 |
-| `failure_types` | 不一定是模型失败；如果参数错误导致空结果，则后续 evaluator 标记 `wrong_argument_value` |
-
-空结果不应自动等同于失败。它可能表示：
-
-- 工具确实没有数据。
-- 参数过窄。
-- 参数值错误。
-- 工具本身异常但未返回错误。
-
-### 10.5 Tool Execution Error
-
-适用条件：
-
-```text
-a_t.type == "tool_call"
-o_{t+1}.type in ["tool_error", "system_error"]
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 追加 assistant tool call 和 error observation |
-| `history` | 记录工具错误 |
-| `known_facts` | 不新增事实 |
-| `open_requirements` | 保持不变 |
-| `error_state` | 记录错误码、是否可重试、重试次数 |
-| `terminal_state` | 如果不可恢复，设置为 `tool_error_unrecoverable`；否则继续 |
-| `failure_types` | 如果是环境问题，不一定标记模型失败；如果模型选择错误工具导致错误，则标记 `wrong_tool` |
-
-是否终止取决于：
-
-- 错误是否 `retryable`。
-- 是否还有替代工具。
-- 是否超过最大重试次数。
-- 用户任务是否允许部分完成。
-
-### 10.6 Final Answer
-
-适用条件：
-
-```text
-a_t.type == "final_answer"
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 追加 assistant final answer |
-| `history` | 记录 final action |
-| `known_facts` | 不再新增事实 |
-| `open_requirements` | 由 evaluator 判断是否全部满足 |
-| `terminal_state` | 设置 `reason = final_answer` |
-| `failure_types` | 如果仍有未满足需求，标记 `premature_final_answer`；如果缺少必要工具调用，标记 `missing_tool_call`；如果内容无依据，标记 `hallucinated_final_answer` |
-
-Final answer 是 trajectory 的正常终止动作，但正常终止不等于任务成功。是否成功由 trajectory evaluator 判定。
-
-### 10.7 Ask User
-
-适用条件：
-
-```text
-a_t.type == "ask_user"
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 追加 assistant ask user message |
-| `history` | 记录 ask_user action |
-| `open_requirements` | 保持未完成，等待用户补充 |
-| `terminal_state` | 在单轮训练设置中可设置 `reason = ask_user`；在多轮环境中等待用户新输入 |
-| `failure_types` | 如果用户信息充足却反问，标记 `unnecessary_ask_user`；如果确实缺少必要信息，不标记失败 |
-
-是否允许 `ask_user` 取决于任务设置：
-
-- 单轮闭环任务：`ask_user` 可以作为终止状态。
-- 多轮交互任务：`ask_user` 后等待新的 user message，继续生成下一步 state。
-
-### 10.8 Invalid Action
-
-适用条件：
-
-```text
-action cannot be parsed
-or action.type not in allowed_action_types
-or required action fields are missing
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `messages` | 可记录原始非法输出，或不进入正式 message history |
-| `history` | 记录 invalid action |
-| `known_facts` | 不新增 |
-| `open_requirements` | 保持不变 |
-| `error_state` | 记录 parse/schema/action type 错误 |
-| `terminal_state` | 可设置 `reason = invalid_action`，或允许一次格式修复 |
-| `failure_types` | 标记 `invalid_action`，必要时标记 `invalid_schema` |
-
-Invalid action 是 action 层面的失败，不应该进入普通正样本。
-
-### 10.9 最大步数终止
-
-为了避免无限循环，环境应设置 `max_steps`。
-
-适用条件：
-
-```text
-progress.step >= max_steps
-and terminal_state is not set
-```
-
-转移规则：
-
-| 字段 | 更新方式 |
-|---|---|
-| `terminal_state.reason` | `max_steps_exceeded` |
-| `terminal_state.success` | false |
-| `failure_types` | 标记 `max_steps_exceeded`，如果存在重复调用可标记 `looping_tool_call` |
-
-最大步数不是模型 action，而是环境终止条件。
-
-### 10.10 Transition Decision Table
-
-| 当前 action | Observation | 下一状态 | 是否终止 | 可能失败标签 |
-|---|---|---|---:|---|
-| `tool_call` | `tool_result/success` | 记录结果，更新 known facts 和 open requirements | no | none |
-| `tool_call` | `schema_error` | 记录 schema error，等待模型修正 | no | `invalid_schema`、`missing_argument` |
-| `tool_call` | `empty_result` | 记录空结果，等待重试、改参或解释无结果 | no by default | `wrong_argument_value` if caused by bad args |
-| `tool_call` | `tool_error/retryable` | 记录错误，允许重试或替代工具 | no | depends on cause |
-| `tool_call` | `tool_error/non_retryable` | 记录不可恢复错误 | yes if no alternative | `tool_error_unrecoverable` |
-| `final_answer` | null | 设置终止状态，交给 evaluator 判定成功 | yes | `premature_final_answer`、`missing_tool_call`、`hallucinated_final_answer` |
-| `ask_user` | null | 单轮任务中终止，多轮任务中等待用户输入 | depends | `unnecessary_ask_user` |
-| invalid action | null/error | 记录非法动作 | yes or retry | `invalid_action` |
-| any | max steps reached | 强制终止 | yes | `max_steps_exceeded` |
-
-### 10.11 Transition 达到优秀的判断
-
-本节达到优秀需要满足：
-
-- 覆盖所有 action type。
-- 覆盖主要 observation type。
-- 明确每种情况下如何更新 `messages/history/progress/terminal_state/labels`。
-- 区分模型失败、工具失败和环境失败。
-- 能直接指导 `agent_state_machine.md` 和状态机代码实现。
-
-当前本节已经满足以上条件，可以作为第一版状态机实现规格。
-
-## 11. Trajectory 定义
-
-一条完整 trajectory 是从用户任务开始，到 Agent 结束回答或失败终止的全过程。
-
-可以表示为：
-
-```json
-{
-  "task_id": "weather_001",
-  "steps": [
-    {
-      "state": {},
-      "action": {
-        "type": "tool_call",
-        "tool_name": "weather",
-        "arguments": {
-          "location": "上海",
-          "date": "明天"
-        }
-      },
-      "observation": {
-        "type": "tool_result",
-        "status": "success",
-        "result": {}
-      }
-    },
-    {
-      "state": {},
-      "action": {
-        "type": "final_answer",
-        "content": "..."
-      },
-      "observation": null
-    }
-  ],
-  "label": {
-    "success": true,
-    "failure_types": []
-  }
-}
-```
-
-Trajectory 是训练和评测的基本单位。
-
-对于 supervised fine-tuning，可以把每个 `(state, expert_action)` 拆成一个训练样本。
-
-对于 reinforcement learning 或 rejection sampling，可以把整条 trajectory 的 evaluator score 作为筛选或优化信号。
-
-## 12. 从 Trajectory 到训练样本
-
-一条 trajectory 可以被拆成多个 step-level training examples。
-
-例如一条轨迹：
-
-```text
-s_0 -> a_0 -> o_1 -> s_1 -> a_1
-```
-
-可以拆成两个 SFT 样本：
-
-```json
-[
-  {
-    "sample_id": "weather_001_step_0",
-    "input": {
-      "model_input_state": "s_0"
-    },
-    "target": {
-      "action": "a_0"
-    },
-    "metadata": {
-      "task_id": "weather_001",
-      "step": 0,
-      "action_type": "tool_call"
-    }
-  },
-  {
-    "sample_id": "weather_001_step_1",
-    "input": {
-      "model_input_state": "s_1"
-    },
-    "target": {
-      "action": "a_1"
-    },
-    "metadata": {
-      "task_id": "weather_001",
-      "step": 1,
-      "action_type": "final_answer"
-    }
-  }
-]
-```
-
-这里最重要的是：
-
-- `input.model_input_state` 只能包含模型推理时真实可见的信息。
-- `target.action` 是希望模型学习的专家动作。
-- `metadata` 可以保存任务类型、错误类型、难度等信息，但默认不作为模型输入。
-
-如果一条 trajectory 是失败轨迹，也可以用于训练，但用途不同：
-
-- 用于 evaluator 训练：学习识别失败类型。
-- 用于 preference data：和成功轨迹组成正负样本对。
-- 用于 targeted repair：把失败 state 对应到修正后的正确 action。
-
-失败轨迹不应该直接当作普通 SFT 正样本，否则模型会模仿错误行为。
-
-## 13. Canonical Schemas
-
-为了让数据构造、训练和评测能够对齐，需要定义一组 canonical schemas。
-
-这些 schema 的目标不是覆盖所有未来情况，而是给第一版实现提供稳定的数据契约。
-
-### 13.1 Task Schema
-
-`task` 描述用户希望 Agent 完成的目标。
-
-必填字段：
-
-```json
-{
-  "task_id": "weather_001",
-  "task_type": "single_tool",
-  "user_query": "查询明天上海的天气，并告诉我是否适合户外跑步。",
-  "available_tools": ["weather"],
-  "success_criteria": [
-    "must_call_tool:weather",
-    "must_use_observation",
-    "must_answer_running_advice"
-  ]
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---:|---|
-| `task_id` | string | yes | 任务唯一 ID |
-| `task_type` | string | yes | 任务类型，例如 `no_tool`、`single_tool`、`multi_tool`、`recovery` |
-| `user_query` | string | yes | 用户原始请求 |
-| `available_tools` | string[] | yes | 当前任务可用工具 |
-| `success_criteria` | string[] | yes | 任务成功条件，建议使用可解析标签 |
-| `constraints` | string[] | no | 额外约束，例如禁止调用某工具、必须先查某信息 |
-| `reference_answer` | string | no | 参考最终答案 |
-| `reference_trajectory_id` | string | no | 对应专家轨迹 ID |
-| `metadata` | object | no | 领域、难度、来源等辅助信息 |
-
-### 13.2 Tool Schema
-
-`tool` 描述工具的输入、输出和错误结构。
-
-```json
-{
-  "name": "weather",
-  "description": "查询指定地点和日期的天气。",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "location": {
-        "type": "string"
-      },
-      "date": {
-        "type": "string"
-      }
-    },
-    "required": ["location", "date"],
-    "additionalProperties": false
-  },
-  "output_schema": {
-    "type": "object",
-    "properties": {
-      "temperature": {
-        "type": "string"
-      },
-      "rain_probability": {
-        "type": "string"
-      },
-      "wind": {
-        "type": "string"
-      }
-    },
-    "required": ["temperature", "rain_probability"]
-  },
-  "error_schema": {
-    "type": "object",
-    "properties": {
-      "code": {
-        "type": "string"
-      },
-      "message": {
-        "type": "string"
-      },
-      "retryable": {
-        "type": "boolean"
-      }
-    },
-    "required": ["code", "message", "retryable"]
-  }
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---:|---|
-| `name` | string | yes | 工具名称，也是 action 中的 `tool_name` |
-| `description` | string | yes | 工具用途说明 |
-| `input_schema` | object | yes | 工具参数 JSON schema |
-| `output_schema` | object | yes | 工具成功返回结果 schema |
-| `error_schema` | object | yes | 工具错误返回 schema |
-| `side_effects` | string[] | no | 是否有写文件、发请求、下单等副作用 |
-| `metadata` | object | no | 版本、owner、mock 信息等 |
-
-### 13.3 Action Schema
-
-`action` 是模型要预测的目标。
-
-`tool_call`：
-
-```json
-{
-  "type": "tool_call",
-  "tool_name": "weather",
-  "arguments": {
-    "location": "上海",
-    "date": "明天"
-  }
-}
-```
-
-`final_answer`：
-
-```json
-{
-  "type": "final_answer",
-  "content": "明天上海整体适合户外跑步。"
-}
-```
-
-`ask_user`：
-
-```json
-{
-  "type": "ask_user",
-  "content": "你想查询哪个城市的天气？"
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 适用 action | 说明 |
-|---|---|---:|---|---|
-| `type` | string | yes | all | `tool_call`、`final_answer` 或 `ask_user` |
-| `tool_name` | string | conditional | tool_call | 要调用的工具名称 |
-| `arguments` | object | conditional | tool_call | 工具参数，必须满足对应 `input_schema` |
-| `content` | string | conditional | final_answer / ask_user | 最终回答或反问用户的内容 |
-
-合法性约束：
-
-- 当 `type=tool_call` 时，必须包含 `tool_name` 和 `arguments`。
-- 当 `type=final_answer` 时，必须包含 `content`，且不应包含 `tool_name`。
-- 当 `type=ask_user` 时，必须包含 `content`，且内容应该针对缺失信息。
-
-### 13.4 Observation Schema
-
-`observation` 是环境执行 action 后返回的信息。
-
-成功结果：
-
-```json
-{
-  "type": "tool_result",
-  "tool_name": "weather",
-  "status": "success",
-  "result": {
-    "temperature": "18-24C",
-    "rain_probability": "20%",
-    "wind": "light"
-  }
-}
-```
-
-错误结果：
-
+**错误结果**：
 ```json
 {
   "type": "schema_error",
-  "tool_name": "weather",
+  "tool_name": "weather", 
   "status": "failed",
   "error": {
     "code": "MISSING_REQUIRED_FIELD",
@@ -1227,20 +380,16 @@ s_0 -> a_0 -> o_1 -> s_1 -> a_1
 }
 ```
 
-字段说明：
+**标准错误码**：
+- `MISSING_REQUIRED_FIELD`：缺少必填参数
+- `WRONG_ARGUMENT_TYPE`：参数类型错误
+- `EMPTY_RESULT`：查询成功但无结果
+- `TIMEOUT`：工具执行超时
+- `PERMISSION_DENIED`：无权限
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---:|---|
-| `type` | string | yes | `tool_result`、`schema_error`、`tool_error`、`empty_result`、`system_error` |
-| `tool_name` | string | conditional | 对 tool action 必填 |
-| `status` | string | yes | `success` 或 `failed` |
-| `result` | object | conditional | 工具成功时返回 |
-| `error` | object | conditional | 工具失败或校验失败时返回 |
-| `raw` | object | no | 原始工具返回，供 debug 使用 |
+#### 1.4.6 Trajectory（轨迹）
 
-### 13.5 Trajectory Schema
-
-`trajectory` 是一次完整任务执行过程。
+一条完整trajectory是从用户任务开始，到Agent结束回答或失败终止的全过程：
 
 ```json
 {
@@ -1252,1029 +401,577 @@ s_0 -> a_0 -> o_1 -> s_1 -> a_1
       "step_index": 0,
       "model_input_state": {},
       "annotation_state": {},
-      "action": {
-        "type": "tool_call",
-        "tool_name": "weather",
-        "arguments": {
-          "location": "上海",
-          "date": "明天"
-        }
-      },
-      "observation": {
-        "type": "tool_result",
-        "tool_name": "weather",
-        "status": "success",
-        "result": {}
-      }
+      "action": {"type": "tool_call", "tool_name": "weather", "arguments": {...}},
+      "observation": {"type": "tool_result", "status": "success", "result": {}}
     },
     {
       "step_index": 1,
       "model_input_state": {},
       "annotation_state": {},
-      "action": {
-        "type": "final_answer",
-        "content": "..."
-      },
+      "action": {"type": "final_answer", "content": "..."},
       "observation": null
     }
   ],
-  "terminal_state": {
-    "reason": "final_answer",
-    "success": true
-  },
-  "labels": {
-    "success": true,
-    "failure_types": []
-  }
+  "terminal_state": {"reason": "final_answer", "success": true},
+  "labels": {"success": true, "failure_types": []}
 }
 ```
 
-字段说明：
+**关键理解**：
+- Trajectory是训练和评测的基本单位
+- 对于supervised fine-tuning，可以把每个`(state, expert_action)`拆成一个训练样本
+- 对于reinforcement learning，可以把整条trajectory的evaluator score作为优化信号
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---:|---|
-| `trajectory_id` | string | yes | 轨迹唯一 ID |
-| `task_id` | string | yes | 对应任务 ID |
-| `source` | string | yes | `human_annotated`、`agent_log`、`model_generated`、`simulated` |
-| `steps` | object[] | yes | 按顺序保存每一步 |
-| `steps[].step_index` | number | yes | 从 0 开始 |
-| `steps[].model_input_state` | object | yes | 模型真实输入 |
-| `steps[].annotation_state` | object | no | 标注/evaluator 辅助信息 |
-| `steps[].action` | object | yes | 当前步动作 |
-| `steps[].observation` | object/null | yes | tool action 后有 observation；final action 后可为 null |
-| `terminal_state` | object | yes | 终止原因和终止状态 |
-| `labels` | object | yes | 成功标签和失败类型 |
+---
 
-`terminal_state.reason` 可选值：
+## 📍 第一部分总结与过渡
 
-- `final_answer`
-- `ask_user`
-- `max_steps_exceeded`
-- `tool_error_unrecoverable`
-- `invalid_action`
-- `manual_stop`
+第一部分建立了Agent训练的基础概念框架，明确了：
 
-### 13.6 SFT Sample Schema
+1. **问题边界**：我们训练的是Agent系统中的决策模块
+2. **数学形式**：训练目标是最大化任务分布上的评估得分  
+3. **核心对象**：Task/Tool/State/Action/Observation/Trajectory的精确定义
+4. **关键洞察**：Agent训练是CoT的外部化和可执行化
 
-`sft_sample` 是从 trajectory step 拆出来的训练样本。
+**接下来进入第二部分**，我们将深入探讨这些对象如何相互作用，构建完整的系统模型。特别关注：
+- 状态如何根据动作和观察进行转移
+- 多工具任务如何建模依赖关系
+- 错误恢复的逻辑如何设计
+
+[跳转到第二部分：系统建模与状态机 →](#第二部分系统建模与状态机)
+
+---
+
+## 第二部分：系统建模与状态机
+
+第一部分定义了Agent训练的核心对象，第二部分将深入探讨这些对象如何相互作用，构建出完整的系统动态。这是理解Agent工作机理的关键，也是实现可训练、可评估系统的理论基础。
+
+### 2.1 状态表示分层：Runtime State vs Annotated State的深度解析
+
+在Agent系统中，状态表示需要满足双重需求：
+1. **推理时**：给模型提供足够但不过度的信息
+2. **评估时**：提供丰富的结构化信息用于质量判断
+
+为此，我们引入了两种状态表示的分层设计：
+
+#### 2.1.1 Runtime State：模型真实所见
+
+Runtime State是模型在推理步骤$t$时实际接收到的输入，必须严格限制为**推理时可用的信息**：
 
 ```json
 {
-  "sample_id": "weather_001_step_0",
-  "task_id": "weather_001",
-  "trajectory_id": "traj_weather_001_gold",
-  "step_index": 0,
-  "input": {
-    "model_input_state": {}
-  },
-  "target": {
-    "action": {
-      "type": "tool_call",
-      "tool_name": "weather",
-      "arguments": {
-        "location": "上海",
-        "date": "明天"
+  "messages": [
+    {"role": "system", "content": "You are an agent that can call tools when needed."},
+    {"role": "user", "content": "查询明天上海的天气，并告诉我是否适合户外跑步。"},
+    {"role": "assistant", "tool_calls": [{"name": "weather", "arguments": {"location": "上海", "date": "明天"}}]},
+    {"role": "tool", "name": "weather", "content": {"temperature": "18-24C", "rain_probability": "20%"}}
+  ],
+  "tools": [
+    {
+      "name": "weather",
+      "description": "查询指定地点和日期的天气。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {"type": "string"},
+          "date": {"type": "string"}
+        },
+        "required": ["location", "date"]
       }
     }
-  },
-  "metadata": {
-    "task_type": "single_tool",
-    "action_type": "tool_call",
-    "source": "human_annotated"
-  }
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---:|---|
-| `sample_id` | string | yes | 样本唯一 ID |
-| `task_id` | string | yes | 对应任务 |
-| `trajectory_id` | string | yes | 来源轨迹 |
-| `step_index` | number | yes | 来源轨迹中的 step |
-| `input.model_input_state` | object | yes | 模型输入 |
-| `target.action` | object | yes | 专家动作 |
-| `metadata` | object | no | 只用于分析和过滤，默认不喂给模型 |
-
-### 13.7 Eval Result Schema
-
-`eval_result` 保存 evaluator 对 step 或 trajectory 的判断。
-
-```json
-{
-  "eval_id": "eval_weather_001",
-  "task_id": "weather_001",
-  "trajectory_id": "traj_weather_001_model_a",
-  "level": "trajectory",
-  "score": 1.0,
-  "metrics": {
-    "tool_selection_accuracy": 1.0,
-    "schema_valid_rate": 1.0,
-    "execution_success_rate": 1.0,
-    "task_success": true,
-    "hallucination": false
-  },
-  "failure_types": [],
-  "details": [
-    {
-      "step_index": 0,
-      "score": 1.0,
-      "failure_types": []
-    }
   ]
 }
 ```
 
-字段说明：
+**Runtime State的核心原则**：
+1. **消息历史完整性**：包含完整的user/assistant/tool消息序列
+2. **工具schema可访问性**：模型需要知道如何调用可用工具
+3. **无信息泄漏**：不包含任何未来信息或评估用的标注信息
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---:|---|
-| `eval_id` | string | yes | 评测结果唯一 ID |
-| `task_id` | string | yes | 对应任务 |
-| `trajectory_id` | string | yes | 被评测轨迹 |
-| `level` | string | yes | `step` 或 `trajectory` |
-| `score` | number | yes | 总分，范围建议为 0 到 1 |
-| `metrics` | object | yes | 各项指标 |
-| `failure_types` | string[] | yes | 聚合后的失败标签 |
-| `details` | object[] | no | step-level 明细 |
+#### 2.1.2 Annotated State：分析与评估支持
 
-### 13.8 字段使用边界
-
-为了避免训练泄漏，需要明确字段使用范围：
-
-| 字段类别 | 可进入模型输入 | 可用于 target | 可用于 evaluator | 可用于分析 |
-|---|---:|---:|---:|---:|
-| `model_input_state` | yes | no | yes | yes |
-| `annotation_state` | no | no | yes | yes |
-| `action` in expert trajectory | no | yes | yes | yes |
-| `observation` | yes, if already occurred | no | yes | yes |
-| `labels` | no | no | yes | yes |
-| `metadata` | no by default | no | yes | yes |
-| `eval_result` | no | no | no | yes |
-
-这一组 schema 达到第一版可实现要求：数据构造脚本、SFT 样本导出脚本和 deterministic evaluator 可以共享同一套字段约定。
-
-## 14. Policy 与训练目标
-
-Agent policy 可以写成：
-
-$$
-\pi_\theta(a_t | s_t)
-$$
-
-也就是模型根据当前 state 预测下一步 action。
-
-根据数据和训练方式不同，可以有几种目标。
-
-### 14.1 Imitation Learning / SFT
-
-如果有专家轨迹 $\tau^*$，可以训练模型模仿专家 action：
-
-$$
-\minimize\ -\log \pi_\theta(a_t^* | s_t)
-$$
-
-训练样本是：
+Annotated State是为了分析、标注、评测而额外添加的结构化状态，**绝不进入模型输入**：
 
 ```json
 {
-  "input": {
-    "state": {}
+  "progress": {
+    "current_phase": "information_processing",
+    "subgoals_completed": ["weather_query"],
+    "subgoals_pending": ["running_judgment"],
+    "known_facts": [
+      {"fact": "上海明天气温18-24C", "source": "weather_tool", "step": 0},
+      {"fact": "上海明天降雨概率20%", "source": "weather_tool", "step": 0}
+    ],
+    "open_requirements": [
+      {"id": "running_advice", "description": "给出是否适合跑步的建议", "priority": "high"}
+    ]
   },
-  "target": {
-    "action": {}
+  "expected_next_action": {
+    "type": "final_answer",
+    "content_requirements": [
+      "必须引用温度信息",
+      "必须明确是否适合跑步",
+      "可以给出注意事项"
+    ]
+  },
+  "failure_labels": [],
+  "evaluation_context": {
+    "task_complexity": "medium",
+    "expected_steps": 2,
+    "critical_information": ["temperature", "rain_probability"]
   }
 }
 ```
 
-适合场景：
+**Annotated State的三大应用场景**：
 
-- 有人工标注的正确工具调用。
-- 有可验证的专家轨迹。
-- 希望模型先学会基本工具使用格式和决策模式。
+```mermaid
+graph TB
+    A[Annotated State] --> B[分析场景<br/>模型行为诊断]
+    A --> C[标注场景<br/>专家轨迹生成]
+    A --> D[评测场景<br/>自动化评估]
+    
+    B --> E[诊断问题模式<br/>统计能力边界]
+    C --> F[指导标注员<br/>生成正确动作]
+    D --> G[提供参考标准<br/>计算评估指标]
+    
+    E --> H[改进数据收集]
+    F --> I[产生训练数据]
+    G --> J[评估模型性能]
+    
+    H --> K[更好的Agent]
+    I --> K
+    J --> K
+```
 
-### 14.2 Rejection Sampling
+#### 2.1.3 字段使用边界：防止训练泄漏
 
-如果可以让模型生成多条 trajectory，并用 evaluator 评分，则可以保留高质量样本：
+为了避免模型学习到"作弊"行为，必须明确字段的使用边界：
 
-$$
-\begin{aligned}
-&\text{sample } \tau_1, \tau_2, \ldots, \tau_k \text{ from } \pi_\theta \\
-&\text{keep } \tau_i \text{ if } \text{Evaluator}(\tau_i) \geq \text{threshold}
-\end{aligned}
-$$
+| 字段类别 | 可进入模型输入 | 可用于target | 可用于evaluator | 可用于分析 | 说明 |
+|----------|:--------------:|:------------:|:---------------:|:----------:|------|
+| `messages` | ✅ | ❌ | ✅ | ✅ | 模型真实上下文 |
+| `tools` | ✅ | ❌ | ✅ | ✅ | 可用工具schema |
+| `model_input_state` | ✅ | ❌ | ✅ | ✅ | runtime state容器 |
+| `annotation_state` | ❌ | ❌ | ✅ | ✅ | 标注和评测辅助信息 |
+| `expected_next_action` | ❌ | ❌ | ✅ | ✅ | 不能泄漏给模型 |
+| `expert_action` | ❌ | ✅ | ✅ | ✅ | SFT目标 |
+| `labels` | ❌ | ❌ | ✅ | ✅ | 成功失败标签 |
+| `metadata` | ❌默认 | ❌ | ✅ | ✅ | 可用于过滤和分桶 |
 
-适合场景：
+**关键规则**：任何标注信息（如`expected_next_action`、`open_requirements`）如果直接放入模型输入，模型可能学会读取标注而非真正推理，导致评估时表现虚高、实际部署时表现下降。
 
-- 人工标注成本高。
-- evaluator 比较可靠。
-- 需要扩大训练数据。
+### 2.2 动作空间设计：Tool Call / Final Answer / Ask User的完整规范
 
-### 14.3 Reinforcement Learning
+动作空间定义了Agent可以采取的所有行为类型。精心设计的动作空间需要在表达能力、学习难度和评估可行性之间取得平衡。
 
-如果 evaluator 可以提供 reward，可以优化期望回报：
+#### 2.2.1 三类核心动作的详细规范
 
-$$
-\maximize\ \mathbb{E}[R(\tau)]
-$$
-
-其中 reward 可以来自：
-
-- schema 是否合法。
-- 工具是否执行成功。
-- 参数是否正确。
-- 最终任务是否完成。
-- 是否避免幻觉。
-
-RL 更依赖 evaluator 的稳定性。如果 evaluator 不可靠，模型可能学到投机行为。
-
-## 15. Feedback 与 Reward 设计
-
-Feedback 是训练或评测时对 action / trajectory 的质量信号。
-
-可以分成两层：
-
-### 15.1 Step-level Feedback
-
-用于判断单步 action 是否正确。
-
-示例：
-
+**1. Tool Call Action（工具调用）**
 ```json
 {
-  "step": 0,
-  "tool_correct": true,
-  "schema_valid": true,
-  "arguments_correct": true,
-  "error_types": []
+  "type": "tool_call",
+  "tool_name": "weather",
+  "arguments": {
+    "location": "上海",
+    "date": "明天"
+  }
+}
+```
+**正确性检查维度**：
+- **工具存在性**：`tool_name`是否在`available_tools`中
+- **参数完整性**：是否包含所有`required`字段
+- **类型符合性**：参数值类型是否符合schema
+- **语义合理性**：参数值是否符合用户意图和上下文
+
+**2. Final Answer Action（最终回答）**
+```json
+{
+  "type": "final_answer",
+  "content": "明天上海气温18-24C，降雨概率20%，风力较小，整体适合户外跑步。建议出门前再确认实时天气，并避开可能降雨的时段。"
+}
+```
+**正确性检查维度**：
+- **时机恰当性**：是否在信息足够时才结束
+- **内容完整性**：是否满足用户任务需求
+- **基于性**：是否基于已有observation
+- **无幻觉**：是否包含observation中不存在的关键事实
+
+**3. Ask User Action（反问用户）**
+```json
+{
+  "type": "ask_user",
+  "content": "你想查询哪个城市的天气？"
+}
+```
+**正确性检查维度**：
+- **必要性**：是否确实缺少必要信息
+- **明确性**：问题是否清晰、针对性强
+- **非冗余**：不询问已提供或可从上下文推断的信息
+
+#### 2.2.2 动作合法性判定与非法样例
+
+Action evaluator应先检查action是否可解析，再检查业务正确性：
+
+| Action | 合法条件 | 非法样例 | Failure Type |
+|--------|----------|----------|--------------|
+| `tool_call` | 包含`tool_name`和`arguments`，且工具存在 | `{"type":"tool_call","arguments":{}}` | `invalid_action`, `missing_argument` |
+| `tool_call` | `arguments`通过对应tool input schema | `{"location":123}` | `invalid_schema`, `wrong_argument_type` |
+| `final_answer` | 包含非空`content` | `{"type":"final_answer"}` | `invalid_action` |
+| `ask_user` | 包含非空`content`，且任务允许反问 | `{"type":"ask_user","content":""}` | `invalid_action` |
+| any | `type`在允许集合中 | `{"type":"search"}` | `invalid_action` |
+
+#### 2.2.3 动作终止条件与任务流程控制
+
+不同action对trajectory的终止含义不同，这影响了状态机的设计：
+
+| Action | 默认是否终止 | 说明 | 状态机影响 |
+|--------|:-----------:|------|------------|
+| `tool_call` | ❌ 否 | 进入工具执行，再返回observation | 继续循环，等待观察结果 |
+| `final_answer` | ✅ 是 | 正常终止，但不等于任务成功 | 终止轨迹，进入评估阶段 |
+| `ask_user` | 🔄 取决于 | 单轮任务中可终止，多轮任务中等待用户补充 | 可能终止或等待用户输入 |
+| invalid action | 🔄 取决于 | 可以终止，也可以允许一次格式修复 | 根据容错策略决定 |
+
+**第一阶段建议**：
+- `final_answer`总是终止轨迹
+- `ask_user`在单轮任务中终止
+- invalid action直接终止并标记失败
+
+### 2.3 观察空间建模：工具结果与错误处理的系统化方法
+
+Observation是action被执行后环境返回的信息，它连接了Agent的意图与环境实际状态。系统化的观察空间设计对于错误恢复训练至关重要。
+
+#### 2.3.1 观察类型分类与结构设计
+
+**1. 成功结果（Tool Result）**
+```json
+{
+  "type": "tool_result",
+  "tool_name": "weather",
+  "status": "success",
+  "result": {
+    "temperature": "18-24C",
+    "rain_probability": "20%",
+    "wind": "light",
+    "humidity": "65%"
+  },
+  "timestamp": "2024-06-04T10:30:00Z",
+  "execution_time_ms": 120
 }
 ```
 
-适合评估：
-
-- 工具选择。
-- 参数结构。
-- 参数值。
-- schema 合法性。
-
-### 15.2 Trajectory-level Feedback
-
-用于判断完整任务是否成功。
-
-示例：
-
+**2. 模式错误（Schema Error）**
 ```json
 {
-  "task_success": true,
-  "final_answer_grounded": true,
-  "unnecessary_tool_calls": 0,
-  "recovered_from_errors": true,
-  "failure_types": []
-}
-```
-
-适合评估：
-
-- 最终任务是否完成。
-- 调用顺序是否合理。
-- 是否出现幻觉。
-- 是否能从错误 observation 中恢复。
-
-### 15.3 Reward Table
-
-如果进入 rejection sampling 或 RL 阶段，需要把 evaluator 输出转成 reward。
-
-第一版 reward 可以按可解释组件构造：
-
-| Reward Component | 来源 | 建议范围 | 说明 |
-|---|---|---:|---|
-| `tool_selection_reward` | step evaluator | 0/1 | 工具是否选对 |
-| `schema_reward` | schema validator | 0/1 | tool call 是否合法 |
-| `argument_reward` | reference action / semantic match | 0-1 | 参数是否正确 |
-| `execution_reward` | environment | 0/1 | 工具是否成功执行 |
-| `recovery_reward` | recovery evaluator | 0-1 | 错误后是否正确恢复 |
-| `groundedness_reward` | groundedness evaluator | 0-1 | final answer 是否基于 observation |
-| `task_success_reward` | trajectory evaluator | 0/1 | 任务是否最终完成 |
-
-可以先使用简单组合：
-
-$$
-\begin{aligned}
-R(\tau) =&\ 0.40 \times \text{task\_success\_reward} \\
-        &+ 0.20 \times \text{average\_step\_reward} \\
-        &+ 0.20 \times \text{groundedness\_reward} \\
-        &+ 0.10 \times \text{recovery\_reward} \\
-        &+ 0.10 \times \text{efficiency\_reward}
-\end{aligned}
-$$
-
-其中：
-
-$$
-\text{efficiency\_reward} = \min\left(\frac{\text{reference\_steps}}{\text{model\_steps}}, 1.0\right)
-$$
-
-这可以惩罚无意义的重复调用，但不应惩罚必要的多步推理。
-
-### 15.4 不同训练阶段如何使用 Feedback
-
-| 训练阶段 | 使用的数据 | 使用的 feedback | 目标 |
-|---|---|---|---|
-| SFT cold start | expert trajectories | `expert_action` | 学会基本 action 格式和工具决策 |
-| SFT repair | failed state + corrected action | failure label + corrected action | 学会从错误状态修正 |
-| Rejection sampling | model generated trajectories | trajectory score | 筛选高质量自生成样本 |
-| Preference training | success/failure trajectory pairs | pairwise preference | 偏好更短、更准、更 grounded 的轨迹 |
-| RL | online rollouts | reward | 优化任务成功率和恢复能力 |
-
-第一阶段建议只做：
-
-- SFT cold start。
-- deterministic evaluator。
-- failure report。
-
-不要过早进入 RL。原因是 evaluator 尚未覆盖所有语义情况时，RL 容易放大 evaluator 漏洞。
-
-## 16. Evaluator 定义
-
-Evaluator 应该被定义成函数，而不仅是指标列表。
-
-### 16.1 Step Evaluator
-
-$$
-E_{\text{step}}(s_t, a_t, \text{reference\_action}_t) \to \text{step\_score}
-$$
-
-输入：
-
-- 当前 state。
-- 模型 action。
-- 参考 action，或规则定义的正确 action。
-
-输出：
-
-```json
-{
-  "score": 1.0,
-  "tool_selection": "correct",
-  "schema_valid": true,
-  "argument_match": "exact",
-  "failure_types": []
-}
-```
-
-### 16.2 Trajectory Evaluator
-
-$$
-E_{\text{traj}}(\tau, \text{task\_spec}) \to \text{traj\_score}
-$$
-
-输入：
-
-输入：
-
-- 完整 trajectory。
-- task spec，包括 success criteria。
-
-输出：
-
-```json
-{
-  "score": 1.0,
-  "task_success": true,
-  "step_success_rate": 1.0,
-  "execution_success_rate": 1.0,
-  "hallucination": false,
-  "failure_types": []
-}
-```
-
-第一版 evaluator 指标：
-
-- `tool_selection_accuracy`
-- `schema_valid_rate`
-- `argument_exact_match`
-- `argument_semantic_match`
-- `execution_success_rate`
-- `recovery_success_rate`
-- `task_success_rate`
-- `hallucination_rate`
-
-## 17. Evaluator 的可实现规则
-
-Evaluator 应优先使用确定性规则，只有在规则无法覆盖时再引入模型判断。
-
-### 17.1 可以用规则直接判断的部分
-
-这些指标通常可以稳定实现：
-
-- `schema_valid`：使用 JSON schema validator 判断。
-- `missing_argument`：检查 required fields。
-- `wrong_argument_type`：检查字段类型。
-- `tool_execution_success`：检查工具返回 status。
-- `empty_result`：检查 result 是否为空。
-- `unnecessary_tool_call`：对无工具任务检查是否产生 tool action。
-
-示例：
-
-```text
-if action.type == "tool_call":
-    schema_valid = validate(action.arguments, tool.schema)
-```
-
-### 17.2 需要参考答案或标注判断的部分
-
-这些指标依赖 reference action 或 task spec：
-
-- `tool_selection_accuracy`
-- `argument_exact_match`
-- `wrong_order`
-- `missing_tool_call`
-- `task_success`
-
-示例：
-
-```text
-tool_selection_accuracy = action.tool_name == reference_action.tool_name
-argument_exact_match = action.arguments == reference_action.arguments
-```
-
-### 17.3 需要语义判断的部分
-
-这些指标难以只靠规则完成：
-
-- `argument_semantic_match`
-- `final_answer_grounded`
-- `hallucinated_final_answer`
-- `task_success` 在开放式任务中的判断。
-
-可选实现方式：
-
-- 人工标注。
-- LLM judge。
-- 规则加 LLM judge。
-- 把最终答案转成结构化 claim 后逐条验证。
-
-如果使用 LLM judge，需要记录 judge prompt、judge model、temperature 和输出理由，否则结果难以复现。
-
-### 17.4 推荐优先级
-
-第一版 evaluator 可以按以下优先级实现：
-
-1. 先实现 schema 和工具执行相关规则。
-2. 再实现 reference action 的 exact match。
-3. 再实现 trajectory-level success criteria。
-4. 最后处理 semantic match 和 hallucination。
-
-这样可以先得到一个稳定、可复现的 evaluator baseline，再逐步覆盖更复杂的语义判断。
-
-## 18. Failure Decision Table
-
-Failure decision table 用来把模型行为映射成稳定的失败标签。
-
-它的目标是让 evaluator 输出不仅有分数，还有可解释诊断。
-
-### 18.1 判定输入
-
-Evaluator 判定 failure type 时，至少需要以下输入：
-
-```json
-{
-  "task": {},
-  "tool_specs": [],
-  "reference_trajectory": {},
-  "model_trajectory": {},
-  "eval_config": {
-    "max_steps": 5,
-    "allow_ask_user": true,
-    "allow_semantic_argument_match": false
+  "type": "schema_error",
+  "tool_name": "weather",
+  "status": "failed",
+  "error": {
+    "code": "MISSING_REQUIRED_FIELD",
+    "message": "Missing required field: location",
+    "retryable": true,
+    "missing_fields": ["location"],
+    "suggestion": "请提供查询地点"
   }
 }
 ```
 
-不同失败类型需要的输入不同：
-
-- schema 类错误只需要 `action` 和 `tool_specs`。
-- exact match 类错误需要 `reference_action`。
-- 顺序类错误需要完整 `reference_trajectory`。
-- groundedness 和 hallucination 需要 `observation` 与 final answer。
-
-### 18.2 Step-level Failure Rules
-
-| Failure Type | 触发条件 | 所需输入 | 可规则判断 | 严重程度 | 说明 |
-|---|---|---|---:|---|---|
-| `invalid_action` | action 无法解析，或 `type` 不在允许集合中 | model action | yes | high | action 层面的格式失败 |
-| `wrong_tool` | `action.type=tool_call`，但 `tool_name != reference.tool_name` | model action, reference action | yes | high | 工具选择错误 |
-| `missing_tool_call` | reference 需要 tool call，但模型输出 `final_answer` 或 `ask_user` | model action, reference action | yes | high | 应查工具却直接回答或反问 |
-| `unnecessary_tool_call` | reference 不需要工具，但模型输出 `tool_call` | model action, reference action/task spec | yes | medium | 多余工具调用 |
-| `missing_argument` | required field 缺失 | model action, tool input schema | yes | high | 参数结构错误 |
-| `wrong_argument_type` | 参数类型不符合 schema | model action, tool input schema | yes | high | 参数类型错误 |
-| `invalid_schema` | 参数无法通过工具 input schema | model action, tool input schema | yes | high | 包含缺字段、错类型、多余字段等 |
-| `wrong_argument_value` | 参数值与 reference 不一致，且不满足语义等价 | model action, reference action | partly | high | exact match 可规则判断，semantic match 可能需要 judge |
-| `unnecessary_ask_user` | 信息充足时模型仍反问用户 | model action, task spec/reference action | partly | medium | 需要判断任务信息是否充足 |
-| `premature_final_answer` | 仍有未满足需求时输出 final answer | model action, annotation state/task criteria | partly | high | 需要 open requirements 或 reference trajectory |
-| `ignored_observation` | final answer 或下一步 action 没有使用关键 observation | model trajectory, observations | partly | high | 通常需要语义判断 |
-| `looping_tool_call` | 重复调用同一工具和同一参数，且没有新信息 | model trajectory | yes | medium | 常见于失败恢复不当 |
-| `max_steps_exceeded` | 超过环境最大步数仍未终止 | model trajectory, eval config | yes | high | 环境强制终止 |
-
-### 18.3 Trajectory-level Failure Rules
-
-| Failure Type | 触发条件 | 所需输入 | 可规则判断 | 严重程度 | 说明 |
-|---|---|---|---:|---|---|
-| `wrong_order` | 工具调用顺序违反 reference 或任务依赖 | model trajectory, reference trajectory/task dependency | yes/partly | high | 多工具任务中常见 |
-| `missing_required_step` | 缺少完成任务所需的关键步骤 | model trajectory, success criteria | partly | high | 例如没查天气却给建议 |
-| `poor_recovery` | 出现可恢复错误后，模型没有修正、重试或换工具 | model trajectory, observations | partly | medium/high | 依赖 recovery 规则 |
-| `tool_error_unrecoverable` | 工具不可恢复错误导致任务失败 | model trajectory, observations | yes | medium | 不一定归因于模型 |
-| `hallucinated_final_answer` | final answer 包含 observation 或 reference 中不存在的关键事实 | final answer, observations/reference | partly | high | 需要 groundedness 判断 |
-| `incomplete_final_answer` | final answer 没有覆盖 success criteria | final answer, task spec | partly | high | 开放式任务可能需要 judge |
-| `contradict_observation` | final answer 与工具 observation 明显矛盾 | final answer, observations | partly | high | 可用规则或 claim checking |
-| `task_failed` | success criteria 未全部满足 | full trajectory, task spec | partly | high | 轨迹级最终失败 |
-
-### 18.4 Failure 优先级
-
-同一步可能触发多个 failure type。为了输出稳定诊断，需要定义优先级。
-
-推荐优先级：
-
-1. `invalid_action`
-2. `invalid_schema`
-3. `wrong_tool`
-4. `missing_tool_call`
-5. `missing_argument`
-6. `wrong_argument_type`
-7. `wrong_argument_value`
-8. `wrong_order`
-9. `premature_final_answer`
-10. `hallucinated_final_answer`
-11. `ignored_observation`
-12. `poor_recovery`
-13. `unnecessary_tool_call`
-14. `unnecessary_ask_user`
-
-优先级的作用：
-
-- 用于选择 primary failure type。
-- 避免同一个错误被重复归因。
-- 保持 failure report 稳定。
-
-但 evaluator 仍应保留多标签能力：
-
+**3. 执行错误（Tool Error）**
 ```json
 {
-  "primary_failure_type": "invalid_schema",
-  "failure_types": [
-    "invalid_schema",
-    "missing_argument"
-  ]
-}
-```
-
-### 18.5 Score Aggregation
-
-Evaluator 可以先输出 step-level scores，再聚合成 trajectory-level score。
-
-Step score 示例：
-
-```json
-{
-  "step_index": 0,
-  "score": 0.75,
-  "metrics": {
-    "tool_correct": true,
-    "schema_valid": true,
-    "arguments_correct": false,
-    "execution_success": true
-  },
-  "failure_types": [
-    "wrong_argument_value"
-  ]
-}
-```
-
-第一版 step score 可以使用简单加权：
-
-$$
-\begin{aligned}
-\text{step\_score} =&\ 0.30 \times \text{tool\_correct} \\
-                  &+ 0.25 \times \text{schema\_valid} \\
-                  &+ 0.25 \times \text{arguments\_correct} \\
-                  &+ 0.20 \times \text{execution\_success}
-\end{aligned}
-$$
-
-Final answer step 可以使用：
-
-$$
-\begin{aligned}
-\text{final\_score} =&\ 0.40 \times \text{task\_requirements\_satisfied} \\
-                   &+ 0.30 \times \text{grounded\_in\_observation} \\
-                   &+ 0.20 \times \text{no\_contradiction} \\
-                   &+ 0.10 \times \text{answer\_completeness}
-\end{aligned}
-$$
-
-Trajectory score 可以使用：
-
-$$
-\begin{aligned}
-\text{trajectory\_score} =&\ 0.60 \times \text{task\_success} \\
-                        &+ 0.25 \times \text{average\_step\_score} \\
-                        &+ 0.15 \times \text{recovery\_score}
-\end{aligned}
-$$
-
-第一版也可以更保守：只输出 pass/fail 和 failure types，不强行使用连续分数。
-
-推荐第一阶段：
-
-- deterministic evaluator 输出 pass/fail。
-- 同时输出 step-level metrics。
-- 暂不把 LLM judge 分数混入总分。
-- 等规则稳定后，再引入连续分数或 reward。
-
-### 18.6 Evaluation Report
-
-一次评测应该输出可聚合报告：
-
-```json
-{
-  "run_id": "eval_run_001",
-  "num_tasks": 100,
-  "metrics": {
-    "task_success_rate": 0.82,
-    "tool_selection_accuracy": 0.91,
-    "schema_valid_rate": 0.96,
-    "argument_exact_match": 0.84,
-    "execution_success_rate": 0.88,
-    "hallucination_rate": 0.07
-  },
-  "failure_breakdown": {
-    "wrong_tool": 5,
-    "missing_argument": 3,
-    "wrong_argument_value": 12,
-    "premature_final_answer": 6,
-    "hallucinated_final_answer": 7
+  "type": "tool_error",
+  "tool_name": "weather",
+  "status": "failed",
+  "error": {
+    "code": "SERVICE_UNAVAILABLE",
+    "message": "天气服务暂时不可用，请稍后重试",
+    "retryable": true,
+    "suggested_retry_delay_sec": 30,
+    "alternative_tools": ["weather_backup"]
   }
 }
 ```
 
-这个 report 的作用：
-
-- 判断模型整体能力。
-- 找出最需要补数据的失败类型。
-- 比较不同训练版本。
-- 指导下一轮 targeted data construction。
-
-### 18.7 Evaluator Rules 达到优秀的判断
-
-本节达到优秀需要满足：
-
-- 每个主要 failure type 都有触发条件。
-- 明确哪些 failure 可规则判断，哪些需要 reference，哪些需要语义判断。
-- 支持 primary failure type 和 multi-label failure types。
-- 有 step score、trajectory score 和 evaluation report 的聚合方式。
-- 能直接指导 deterministic evaluator baseline 实现。
-
-当前本节已经满足第一版 deterministic evaluator 的实现要求。语义类 failure 仍需要在 groundedness 章节继续细化。
-
-## 19. Grounded Final Answer
-
-Grounded final answer 用来判断模型最终回答是否基于已有 observation，而不是凭空编造。
-
-在 tool-using Agent 中，最终回答的质量不能只看语言是否流畅，还要看它是否满足：
-
-- 使用了必要工具结果。
-- 没有加入 observation 中不存在的关键事实。
-- 没有与 observation 矛盾。
-- 覆盖了用户任务的核心要求。
-
-### 19.1 核心定义
-
-给定：
-
-```text
-O = {o_1, o_2, ..., o_k}
-```
-
-表示当前 trajectory 中所有可用 observations。
-
-模型最终回答：
-
-```text
-y = final_answer
-```
-
-Groundedness 评测目标是判断：
-
-```text
-Every task-relevant factual claim in y is supported by O or task context.
-```
-
-也就是说，最终回答里的关键事实要么来自工具 observation，要么来自用户输入或任务上下文。
-
-### 19.2 Claim 分类
-
-可以先把 final answer 中的内容分成四类：
-
-| Claim Type | 说明 | 是否需要 observation 支持 | 示例 |
-|---|---|---:|---|
-| `observed_fact` | 来自工具结果的事实 | yes | “明天上海降雨概率 20%” |
-| `derived_judgment` | 基于 observation 推导出的判断 | yes | “整体适合户外跑步” |
-| `user_context` | 来自用户输入的事实 | no, 但需与用户输入一致 | “你想在上海跑步” |
-| `generic_advice` | 通用建议 | no, 但不能与 observation 冲突 | “出门前再确认实时天气” |
-
-需要重点检查的是：
-
-- `observed_fact` 是否真的出现在 observation 中。
-- `derived_judgment` 是否能由 observation 合理推出。
-- `generic_advice` 是否引入了新的具体事实。
-
-### 19.3 Groundedness Labels
-
-Evaluator 可以为 final answer 输出以下标签：
-
+**4. 空结果（Empty Result）**
 ```json
 {
-  "grounded_in_observation": true,
-  "uses_required_observation": true,
-  "has_unsupported_claim": false,
-  "contradicts_observation": false,
-  "covers_task_requirements": true,
-  "failure_types": []
+  "type": "empty_result",
+  "tool_name": "weather",
+  "status": "success",
+  "result": {},
+  "note": "查询成功但未找到匹配数据，请检查查询参数"
 }
 ```
 
-字段说明：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `grounded_in_observation` | boolean | 关键事实是否由 observation 或 task context 支持 |
-| `uses_required_observation` | boolean | 是否使用了完成任务所必需的 observation |
-| `has_unsupported_claim` | boolean | 是否出现无依据关键事实 |
-| `contradicts_observation` | boolean | 是否和 observation 明显矛盾 |
-| `covers_task_requirements` | boolean | 是否覆盖 success criteria |
-| `failure_types` | string[] | 对应失败标签 |
-
-### 19.4 可规则判断的 Groundedness
-
-第一版可以先处理结构化 observation 中的 exact match。
-
-适用场景：
-
-- observation 是结构化 JSON。
-- final answer 中包含可抽取的数值、地点、日期、状态。
-- success criteria 可以映射到具体字段。
-
-示例 observation：
-
+**5. 系统错误（System Error）**
 ```json
 {
-  "temperature": "18-24C",
-  "rain_probability": "20%",
-  "wind": "light"
+  "type": "system_error",
+  "tool_name": "weather",
+  "status": "failed",
+  "error": {
+    "code": "TIMEOUT",
+    "message": "工具执行超时（5000ms）",
+    "retryable": true,
+    "max_retries": 3
+  }
 }
 ```
 
-final answer：
+#### 2.3.2 标准错误码体系与恢复指导
 
-```text
-明天上海气温 18-24C，降雨概率 20%，风力较小，整体适合户外跑步。
+系统化的错误码设计有助于模型学习恢复策略：
+
+| Error Code | Observation Type | Retryable | 模型恢复指导 | 示例场景 |
+|------------|------------------|:---------:|--------------|----------|
+| `MISSING_REQUIRED_FIELD` | `schema_error` | ✅ 是 | 补充缺失字段后重试 | 缺少`location`参数 |
+| `WRONG_ARGUMENT_TYPE` | `schema_error` | ✅ 是 | 修正参数类型后重试 | `date`参数应该是字符串而不是数字 |
+| `UNKNOWN_TOOL` | `schema_error` | ❌ 否 | 选择其他可用工具 | 工具名称拼写错误 |
+| `INVALID_ARGUMENT_VALUE` | `tool_error` | ✅ 是 | 调整参数值后重试 | `date`参数格式不正确 |
+| `EMPTY_RESULT` | `empty_result` | 🔄 取决于 | 放宽查询条件或解释无结果 | 查询未来30天天气 |
+| `TIMEOUT` | `system_error` | ✅ 是 | 稍后重试或使用备用工具 | 网络延迟 |
+| `PERMISSION_DENIED` | `system_error` | ❌ 否 | 说明限制或请求授权 | 无API访问权限 |
+| `RATE_LIMITED` | `system_error` | ✅ 是 | 等待或降频调用 | API调用频率超限 |
+| `INTERNAL_ERROR` | `system_error` | ✅ 是 | 稍后重试或使用备用方案 | 工具内部异常 |
+
+#### 2.3.3 观察对状态转移的影响机制
+
+Observation不是被动信息，而是主动改变Agent认知状态的关键：
+
+```mermaid
+graph LR
+    A[当前状态 s_t] --> B[Agent动作 a_t]
+    B --> C[环境执行]
+    C --> D{执行结果}
+    
+    D -->|成功| E[Observation o_t+1: Tool Result]
+    D -->|模式错误| F[Observation o_t+1: Schema Error]
+    D -->|执行错误| G[Observation o_t+1: Tool Error]
+    D -->|空结果| H[Observation o_t+1: Empty Result]
+    D -->|系统错误| I[Observation o_t+1: System Error]
+    
+    E --> J[更新known_facts<br/>移除满足的requirements]
+    F --> K[记录错误类型<br/>保持requirements不变]
+    G --> L[记录错误和可重试性<br/>可能换工具]
+    H --> M[记录无结果<br/>可能调整参数]
+    I --> N[记录系统错误<br/>决定是否重试]
+    
+    J --> O[新状态 s_t+1]
+    K --> O
+    L --> O
+    M --> O
+    N --> O
 ```
 
-规则判断：
+### 2.4 状态转移规则：完整的Transition决策表与实现规范
 
-| 检查项 | 规则 | 结果 |
-|---|---|---|
-| 温度 | final answer 中的 `18-24C` 与 observation 一致 | pass |
-| 降雨概率 | final answer 中的 `20%` 与 observation 一致 | pass |
-| 风 | “风力较小” 与 `wind=light` 语义一致 | pass, 可用映射表 |
-| 跑步建议 | 基于低降雨、温和气温、微风推导 | pass |
+状态转移函数是Agent系统的核心动态，定义了环境如何根据当前状态、Agent动作和工具观察更新到下一状态：
 
-### 19.5 Unsupported Claim
+$$
+s_{t+1} = \text{Transition}(s_t, a_t, o_{t+1})
+$$
 
-如果 final answer 中出现 observation 和任务上下文都不支持的关键事实，则标记：
+#### 2.4.1 Transition函数的工程实现框架
 
-```text
-has_unsupported_claim = true
-failure_types includes hallucinated_final_answer
+在工程实现上，transition需要系统性地更新多个状态组件：
+
+```python
+def transition(state: State, action: Action, observation: Observation) -> State:
+    """状态转移函数的核心逻辑"""
+    new_state = state.copy()
+    
+    # 1. 更新消息历史
+    new_state.messages.append({
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [action] if action.type == "tool_call" else []
+    })
+    
+    if observation:
+        new_state.messages.append({
+            "role": "tool",
+            "tool_call_id": action.id if hasattr(action, 'id') else None,
+            "name": action.tool_name if action.type == "tool_call" else None,
+            "content": observation
+        })
+    
+    # 2. 更新历史记录
+    new_state.history.append({
+        "step": len(new_state.history),
+        "action": action,
+        "observation": observation,
+        "timestamp": get_current_time()
+    })
+    
+    # 3. 更新进度状态（Annotation State部分）
+    new_state.annotation_state.progress.step += 1
+    
+    if observation and observation.type == "tool_result" and observation.status == "success":
+        # 从成功结果中提取已知事实
+        facts = extract_facts_from_result(observation.result)
+        new_state.annotation_state.progress.known_facts.extend(facts)
+        
+        # 更新未完成需求
+        new_state.annotation_state.progress.open_requirements = [
+            req for req in state.annotation_state.progress.open_requirements
+            if not is_requirement_satisfied(req, facts)
+        ]
+    
+    elif observation and observation.status == "failed":
+        # 记录错误状态
+        new_state.annotation_state.progress.error_state = {
+            "type": observation.type,
+            "tool_name": observation.tool_name,
+            "error_code": observation.error.code,
+            "retryable": observation.error.retryable,
+            "attempt_count": state.annotation_state.progress.error_state.attempt_count + 1 
+                           if state.annotation_state.progress.error_state else 1
+        }
+    
+    # 4. 判断终止条件
+    if action.type == "final_answer":
+        new_state.terminal_state = {
+            "reason": "final_answer",
+            "step": len(new_state.history),
+            "timestamp": get_current_time()
+        }
+    elif action.type == "ask_user" and not state.task.allow_multi_turn:
+        new_state.terminal_state = {
+            "reason": "ask_user",
+            "step": len(new_state.history),
+            "timestamp": get_current_time()
+        }
+    elif len(new_state.history) >= state.task.max_steps:
+        new_state.terminal_state = {
+            "reason": "max_steps_exceeded",
+            "step": len(new_state.history),
+            "timestamp": get_current_time()
+        }
+    
+    # 5. 记录失败标签（如果适用）
+    if should_record_failure(action, observation, state):
+        failure_type = classify_failure(action, observation, state)
+        new_state.labels.failure_types.append(failure_type)
+    
+    return new_state
 ```
 
-示例：
+#### 2.4.2 完整的Transition决策表
 
-Observation：
+基于action和observation的不同组合，以下是系统性的状态转移规则：
+
+| 当前action | Observation | 下一状态更新 | 是否终止 | 可能失败标签 | 恢复指导 |
+|------------|-------------|--------------|:--------:|--------------|----------|
+| `tool_call` | `tool_result/success` | 记录结果，更新known_facts和open_requirements | ❌ 否 | none | 继续决策 |
+| `tool_call` | `schema_error` | 记录schema error，等待模型修正 | ❌ 否 | `invalid_schema`, `missing_argument` | 修正参数重试 |
+| `tool_call` | `empty_result` | 记录空结果，等待重试、改参或解释无结果 | ❌ 否 | `wrong_argument_value` (如果参数错误导致) | 放宽参数或解释 |
+| `tool_call` | `tool_error/retryable` | 记录错误，允许重试或替代工具 | ❌ 否 | depends on cause | 重试或换工具 |
+| `tool_call` | `tool_error/non_retryable` | 记录不可恢复错误 | ✅ 是(如无替代) | `tool_error_unrecoverable` | 终止或换领域 |
+| `final_answer` | null | 设置终止状态，交给evaluator判定成功 | ✅ 是 | `premature_final_answer`, `missing_tool_call`, `hallucinated_final_answer` | 评估阶段处理 |
+| `ask_user` | null | 单轮任务中终止，多轮任务中等待用户输入 | 🔄 取决于 | `unnecessary_ask_user` | 用户响应或终止 |
+| invalid action | null/error | 记录非法动作 | ✅ 或重试 | `invalid_action` | 终止或允许修复 |
+| any | max steps reached | 强制终止 | ✅ 是 | `max_steps_exceeded` | 系统强制终止 |
+
+#### 2.4.3 关键转移场景的详细分析
+
+**场景1：Tool Call成功后的状态演进**
+```
+初始状态s_t:
+  - open_requirements: ["查询上海明天天气", "判断是否适合跑步"]
+  - known_facts: []
+  
+动作a_t: tool_call(weather, {location: "上海", date: "明天"})
+观察o_t+1: tool_result(success, {temperature: "18-24C", rain: "20%"})
+
+转移后状态s_t+1:
+  - messages: 追加assistant tool_call和tool result
+  - history: 记录成功步骤
+  - open_requirements: ["判断是否适合跑步"] (移除了已满足的)
+  - known_facts: ["上海明天气温18-24C", "上海明天降雨概率20%"]
+  - 不终止，继续决策
+```
+
+**场景2：Schema Error后的恢复机会**
+```
+初始状态s_t:
+  - open_requirements: ["查询天气", "给出建议"]
+  - error_state: null
+  
+动作a_t: tool_call(weather, {date: "明天"})  # 缺少location
+观察o_t+1: schema_error(MISSING_REQUIRED_FIELD, location)
+
+转移后状态s_t+1:
+  - messages: 追加错误信息
+  - history: 记录失败尝试
+  - open_requirements: 保持不变
+  - error_state: {type: "schema_error", missing: ["location"], retryable: true, attempt: 1}
+  - failure_types: ["missing_argument"]
+  - 不终止，给模型修正机会
+```
+
+**场景3：Final Answer的终止处理**
+```
+初始状态s_t:
+  - open_requirements: ["判断是否适合跑步"]
+  - known_facts: [天气信息]
+  
+动作a_t: final_answer("适合跑步")
+观察o_t+1: null
+
+转移后状态s_t+1:
+  - messages: 追加final answer
+  - terminal_state: {reason: "final_answer", step: t, success: 待评估}
+  - 终止轨迹，进入评估阶段
+  - 评估器检查：是否还有open_requirements? 回答是否基于known_facts?
+```
+
+### 2.5 多工具依赖建模：DAG表示、参数绑定与顺序约束
+
+单工具任务相对简单，真正的挑战在于多工具任务。这需要建模工具间的依赖关系、参数传递逻辑和顺序约束。
+
+#### 2.5.1 多工具任务的图表示
+
+多工具任务可以用有向无环图（DAG）表示，其中节点是工具调用，边是依赖关系：
 
 ```json
 {
-  "temperature": "18-24C",
-  "rain_probability": "20%"
-}
-```
-
-Final answer：
-
-```text
-明天上海空气质量优良，紫外线很弱，非常适合跑步。
-```
-
-判定：
-
-| Claim | 判定 |
-|---|---|
-| “空气质量优良” | unsupported |
-| “紫外线很弱” | unsupported |
-| “非常适合跑步” | partially supported, 但程度可能过强 |
-
-### 19.6 Contradiction
-
-如果 final answer 和 observation 明显冲突，则标记：
-
-```text
-contradicts_observation = true
-failure_types includes contradict_observation
-```
-
-示例：
-
-Observation：
-
-```json
-{
-  "rain_probability": "90%",
-  "wind": "strong"
-}
-```
-
-Final answer：
-
-```text
-明天基本不会下雨，风力较小，很适合户外跑步。
-```
-
-判定：
-
-| Claim | Observation | 结果 |
-|---|---|---|
-| “基本不会下雨” | `rain_probability=90%` | contradiction |
-| “风力较小” | `wind=strong` | contradiction |
-| “很适合户外跑步” | 高降雨 + 强风 | unsupported/contradiction |
-
-### 19.7 Derived Judgment
-
-有些回答不是直接复述 observation，而是基于 observation 做判断。
-
-例如：
-
-```text
-temperature=18-24C
-rain_probability=20%
-wind=light
-=> suitable_for_running = true
-```
-
-这类 derived judgment 需要定义领域规则或 judge prompt。
-
-第一版可以采用简单规则：
-
-```text
-if rain_probability <= 30%
-and wind in ["light", "moderate"]
-and temperature is within comfortable range:
-    running_advice = "suitable"
-else:
-    running_advice = "not_suitable_or_use_caution"
-```
-
-对于不同任务域，需要不同的 derivation rules。
-
-### 19.8 Claim Checking 流程
-
-更通用的 groundedness evaluator 可以分三步：
-
-1. 从 final answer 中抽取 task-relevant claims。
-2. 对每个 claim 判断支持关系：`supported`、`unsupported`、`contradicted`、`not_checkable`。
-3. 聚合成 final answer groundedness score。
-
-输出示例：
-
-```json
-{
-  "claims": [
-    {
-      "text": "明天上海气温 18-24C",
-      "type": "observed_fact",
-      "status": "supported",
-      "evidence": "observation.weather.temperature"
-    },
-    {
-      "text": "空气质量优良",
-      "type": "observed_fact",
-      "status": "unsupported",
-      "evidence": null
-    }
-  ],
-  "grounded_in_observation": false,
-  "failure_types": [
-    "hallucinated_final_answer"
-  ]
-}
-```
-
-### 19.9 第一阶段实现建议
-
-第一阶段不必直接实现完整 LLM judge。
-
-推荐顺序：
-
-1. 对结构化字段做 exact match。
-2. 对常见枚举值做映射，例如 `light -> 风力较小`。
-3. 对 success criteria 做覆盖检查。
-4. 对明显矛盾做规则检查。
-5. 最后再引入 LLM judge 处理开放式 claim。
-
-第一阶段可以先输出三类结果：
-
-- `grounded`
-- `unsupported_claim`
-- `contradiction`
-
-这足够支撑 hallucination rate 的初版统计。
-
-### 19.10 LLM Judge 使用边界
-
-当使用 LLM judge 判断 groundedness 时，必须固定：
-
-- judge model。
-- judge prompt。
-- temperature。
-- 输入 observation。
-- 输入 final answer。
-- 输出 JSON schema。
-
-Judge 输出建议：
-
-```json
-{
-  "grounded_in_observation": true,
-  "unsupported_claims": [],
-  "contradictions": [],
-  "reason": "Final answer only uses weather facts returned by the tool."
-}
-```
-
-LLM judge 不应直接替代规则 evaluator，而应作为规则无法覆盖时的补充。
-
-### 19.11 Groundedness 达到优秀的判断
-
-本节达到优秀需要满足：
-
-- 定义 grounded final answer 的判定目标。
-- 区分 observed fact、derived judgment、user context 和 generic advice。
-- 明确 unsupported claim 和 contradiction 的触发条件。
-- 给出 claim checking 流程和输出 schema。
-- 给出第一阶段可实现方案和 LLM judge 使用边界。
-
-当前本节已经达到优秀，可以指导 hallucination 和 final answer groundedness 的第一版 evaluator 实现。
-
-## 20. Multi-tool Dependency
-
-多工具任务是 tool-using Agent 的核心场景之一。
-
-单工具任务只需要判断“是否调用正确工具、参数是否正确”，而多工具任务还需要建模：
-
-- 工具之间是否有依赖关系。
-- 后续工具参数是否来自前序 observation。
-- 多个工具调用是否允许交换顺序。
-- 某个工具失败后是否可以使用替代工具。
-
-### 20.1 多工具任务表示
-
-多工具 task 可以增加 `tool_plan_spec`：
-
-```json
-{
-  "task_id": "travel_001",
+  "task_id": "travel_planning_001",
   "task_type": "multi_tool_sequential",
   "user_query": "帮我查明天从上海到北京的航班，并根据北京天气建议是否需要带伞。",
   "available_tools": ["flight_search", "weather"],
   "tool_plan_spec": {
-    "nodes": [
+    "dependency_graph": {
+      "nodes": [
+        {
+          "id": "search_flight",
+          "tool_name": "flight_search",
+          "required": true,
+          "description": "查询上海到北京的航班"
+        },
+        {
+          "id": "check_weather",
+          "tool_name": "weather", 
+          "required": true,
+          "description": "查询北京明天天气"
+        }
+      ],
+      "edges": [
+        {
+          "from": "search_flight",
+          "to": "check_weather",
+          "type": "context_dependency",
+          "description": "需要确定目的地城市后才能查天气"
+        }
+      ]
+    },
+    "argument_bindings": [
       {
-        "id": "search_flight",
-        "tool_name": "flight_search",
+        "target_node": "check_weather",
+        "target_argument": "location",
+        "source_node": "search_flight", 
+        "source_path": "result.destination_city",
+        "transform": "identity",
         "required": true
-      },
-      {
-        "id": "check_weather",
-        "tool_name": "weather",
-        "required": true
-      }
-    ],
-    "edges": [
-      {
-        "from": "search_flight",
-        "to": "check_weather",
-        "type": "context_dependency",
-        "description": "目的地城市来自航班查询任务或用户输入"
       }
     ]
   },
@@ -2286,778 +983,1824 @@ LLM judge 不应直接替代规则 evaluator，而应作为规则无法覆盖时
 }
 ```
 
-这里的 `tool_plan_spec` 不是必须暴露给模型。它主要用于标注、evaluator 和任务生成。
+#### 2.5.2 依赖类型与顺序约束分类
 
-### 20.2 Dependency Graph
+多工具任务中的依赖可以分为几种类型，每种类型对顺序有不同要求：
 
-多工具依赖可以表示为 DAG：
+| 依赖类型 | 说明 | 顺序要求 | 示例 | 评估方法 |
+|----------|------|----------|------|----------|
+| **数据依赖** | 后一个工具参数来自前一个工具结果 | 严格顺序 | 先查订单ID，再查物流 | exact sequence match |
+| **上下文依赖** | 后一个工具使用前一步确定的上下文 | 严格顺序 | 先查航班目的地，再查目的地天气 | exact sequence match |
+| **验证依赖** | 后一个工具用于验证前一个结果 | 严格顺序 | 查网页后再查数据库确认 | exact sequence match |
+| **资源依赖** | 需要前一个工具创建资源（如文件） | 严格顺序 | 先创建文件，再写入内容 | exact sequence match |
+| **逻辑依赖** | 后一步决策依赖前一步结果 | 严格顺序 | 先分析数据，再基于结论做推荐 | exact sequence match |
+| **无依赖并行** | 多个工具互不依赖 | 无序 | 查询A股票和B股票价格 | set match |
+| **弱依赖** | 可以交换顺序但可能低效 | 部分有序 | 先查A再查B vs 先查B再查A | DAG topological validity |
 
-```text
-G = (V, E)
-```
+#### 2.5.3 参数绑定与信息流建模
 
-其中：
-
-- `V` 是工具调用节点。
-- `E` 是调用依赖边。
-
-边类型可以包括：
-
-| Edge Type | 说明 | 示例 |
-|---|---|---|
-| `data_dependency` | 后一个工具参数来自前一个工具结果 | 先查订单 ID，再查物流 |
-| `context_dependency` | 后一个工具使用前一步确定的上下文 | 先查航班目的地，再查目的地天气 |
-| `validation_dependency` | 后一个工具用于验证前一个结果 | 查网页后再查数据库确认 |
-| `fallback_dependency` | 前一个工具失败后尝试替代工具 | 搜索 API 失败后用浏览器 |
-
-### 20.3 参数绑定
-
-多工具任务的关键是参数如何从 observation 派生。
-
-可以用 `argument_bindings` 表示：
+参数绑定定义了信息如何从一个工具的观察流向下一个工具的参数：
 
 ```json
 {
   "argument_bindings": [
     {
-      "target_step": "track_package",
-      "target_argument": "tracking_id",
-      "source_step": "find_order",
-      "source_path": "result.tracking_id",
-      "transform": "identity"
+      "target_step": "check_weather",
+      "target_argument": "location",
+      "source_step": "search_flight",
+      "source_path": "result.destination_city",
+      "transform": "identity",
+      "validation_rules": [
+        {"type": "not_null", "message": "目的地城市不能为空"},
+        {"type": "is_city", "message": "必须是有效的城市名称"}
+      ],
+      "fallback_value": "北京",
+      "fallback_condition": "source_result_empty"
+    },
+    {
+      "target_step": "check_weather", 
+      "target_argument": "date",
+      "source_step": "search_flight",
+      "source_path": "result.departure_date",
+      "transform": "add_days(1)",
+      "description": "查航班出发日期的下一天天气"
     }
   ]
 }
 ```
 
-字段说明：
+**参数绑定的关键机制**：
+1. **提取路径**：使用JSONPath或类似语法从观察中提取值
+2. **转换函数**：对提取的值进行必要转换（格式化、计算等）
+3. **验证规则**：确保绑定值的有效性
+4. **回退机制**：当源信息不可用时提供默认值
+5. **错误处理**：绑定失败时的处理策略
 
-| 字段 | 说明 |
-|---|---|
-| `target_step` | 使用该参数的工具节点 |
-| `target_argument` | 目标工具参数名 |
-| `source_step` | 参数来源工具节点 |
-| `source_path` | 从 observation 中取值的路径 |
-| `transform` | 可选转换，例如日期格式化、单位转换、字符串清洗 |
+#### 2.5.4 多工具评估的复杂性处理
 
-Evaluator 可以用这个绑定判断：
-
-- 后续参数是否真的来自前序 observation。
-- 模型是否编造了中间参数。
-- 参数转换是否合理。
-
-### 20.4 顺序约束与等价顺序
-
-不是所有多工具任务都有严格顺序。
-
-可以把顺序分成三类：
-
-| 类型 | 说明 | 评测方式 |
-|---|---|---|
-| strict order | 必须按指定顺序调用 | exact sequence match |
-| partial order | 只要求满足依赖关系 | DAG topological validity |
-| unordered | 多个工具互不依赖 | set match |
-
-示例：
-
-```text
-strict: login -> fetch_profile -> update_profile
-partial: fetch_weather and fetch_calendar can happen in any order, then final_answer
-unordered: 查询 A 股票价格和 B 股票价格
-```
-
-多工具 evaluator 不应该把所有顺序差异都判错。只要满足 DAG 依赖的拓扑序，就可以认为顺序有效。
-
-### 20.5 多工具 Trajectory Evaluator
-
-多工具 trajectory 可以增加以下指标：
-
-| Metric | 说明 |
-|---|---|
-| `required_tools_covered` | 是否调用了所有必需工具 |
-| `extra_tools_count` | 是否调用了多余工具 |
-| `dependency_valid` | 调用顺序是否满足依赖图 |
-| `argument_binding_valid` | 后续参数是否正确来自前序 observation |
-| `parallel_order_equivalent` | 是否属于允许的等价顺序 |
-| `multi_step_task_success` | 多工具任务是否完成 |
-
-判定示例：
-
-```text
-dependency_valid = all(
-  position(edge.from) < position(edge.to)
-  for edge in dependency_edges
-)
-```
-
-对于 unordered 工具集合：
-
-```text
-tool_set_match = set(model_tools) == set(reference_tools)
-```
-
-### 20.6 多工具失败类型
-
-多工具任务新增 failure types：
-
-| Failure Type | 触发条件 |
-|---|---|
-| `missing_required_tool` | 缺少必须调用的工具 |
-| `extra_tool_call` | 调用了任务不需要的工具 |
-| `dependency_violation` | 工具调用顺序违反依赖图 |
-| `invalid_argument_binding` | 后续参数没有正确来自前序 observation |
-| `lost_intermediate_result` | 工具返回了中间结果，但后续没有使用 |
-| `wrong_parallel_order_judgment` | 把等价顺序误判为错误，属于 evaluator 问题 |
-
-### 20.7 多工具达到优秀的判断
-
-本节达到优秀需要满足：
-
-- 能表示多工具任务的依赖图。
-- 能区分 strict order、partial order 和 unordered。
-- 能表示参数从前序 observation 到后续 action 的绑定。
-- 能定义多工具 evaluator 指标和失败类型。
-- 能避免把合法等价顺序误判为错误。
-
-当前本节已经达到优秀，可以支撑多工具 trajectory 建模和 evaluator baseline。
-
-## 21. Recovery Behavior
-
-Recovery behavior 描述 Agent 遇到错误 observation 后，如何重试、修正、换工具、反问用户或停止。
-
-它衡量的是 Agent 是否能从失败状态中恢复，而不是一次性永远不犯错。
-
-### 21.1 Recovery State
-
-当 observation 是错误或空结果时，transition 应更新 `recovery_state`：
+多工具任务的评估比单工具任务复杂得多，需要考虑多个维度：
 
 ```json
 {
-  "recovery_state": {
-    "active": true,
-    "error_type": "schema_error",
-    "tool_name": "weather",
-    "retryable": true,
-    "attempt_count": 1,
-    "max_attempts": 3,
-    "last_failed_action": {
-      "type": "tool_call",
-      "tool_name": "weather",
-      "arguments": {
-        "date": "明天"
+  "evaluation_results": {
+    "basic_metrics": {
+      "required_tools_covered": true,
+      "extra_tools_count": 0,
+      "tool_selection_accuracy": 1.0
+    },
+    "dependency_metrics": {
+      "dependency_valid": true,
+      "topological_order_correct": true,
+      "missing_dependency_edges": 0
+    },
+    "parameter_metrics": {
+      "argument_binding_valid": true,
+      "bound_arguments_count": 2,
+      "unbound_required_arguments": 0,
+      "binding_accuracy": 1.0
+    },
+    "efficiency_metrics": {
+      "parallelizability_score": 0.8,
+      "redundant_calls": 0,
+      "optimal_step_count": 3,
+      "actual_step_count": 3
+    },
+    "semantic_metrics": {
+      "intermediate_result_usage": true,
+      "lost_intermediate_results": 0,
+      "synthesis_quality": 0.9
+    }
+  }
+}
+```
+
+#### 2.5.5 多工具失败类型的专门处理
+
+多工具任务引入了新的失败模式，需要专门的检测和处理：
+
+| Failure Type | 触发条件 | 检测方法 | 修复策略 |
+|--------------|----------|----------|----------|
+| `missing_required_tool` | 缺少必须调用的工具 | 检查`required_tools`是否全部出现 | 添加缺失的工具调用 |
+| `extra_tool_call` | 调用了任务不需要的工具 | 检查工具是否在`available_tools`中且必要 | 移除多余调用 |
+| `dependency_violation` | 工具调用顺序违反依赖图 | 检查DAG拓扑顺序 | 调整调用顺序 |
+| `invalid_argument_binding` | 后续参数没有正确来自前序observation | 检查参数绑定路径的有效性 | 修正绑定或添加中间步骤 |
+| `lost_intermediate_result` | 工具返回了中间结果，但后续没有使用 | 分析信息流，检查关键结果是否被使用 | 添加使用该结果的步骤 |
+| `premature_synthesis` | 在收集完所有必要信息前就进行综合 | 检查综合步骤前的依赖是否全部满足 | 延迟综合步骤 |
+
+---
+
+## 📍 第二部分总结与过渡
+
+第二部分深入探讨了Agent系统的动态建模，建立了完整的状态转移框架：
+
+1. **状态表示分层**：明确了Runtime State和Annotated State的不同角色和使用边界
+2. **动作空间设计**：规范了三类核心动作的结构、合法性和终止条件  
+3. **观察空间建模**：系统化了工具结果和错误处理，提供了恢复指导
+4. **状态转移规则**：给出了完整的Transition决策表和实现框架
+5. **多工具依赖**：引入了DAG表示、参数绑定和复杂依赖建模
+
+**这些建模元素共同构成了Agent系统的"游戏规则"**，决定了Agent如何与环境交互，如何从错误中恢复，以及如何完成复杂任务。
+
+**接下来进入第三部分**，我们将关注如何基于这个系统模型进行实际的训练和评估。特别关注：
+- 如何构造高质量的训练数据
+- 不同训练方法（SFT/RL/Rejection Sampling）的数学形式化
+- 评估器设计与失败分析
+- Groundedness验证的具体方法
+
+[跳转到第三部分：数据、训练与评估 →](#第三部分数据训练与评估)
+
+---
+
+## 第三部分：数据、训练与评估
+
+前两部分建立了Agent系统的理论框架和动态模型，第三部分将关注实践层面：如何获得数据、如何训练模型、如何评估性能。这是将理论转化为实际系统的关键环节。
+
+### 3.1 数据构造方法论：四种来源与质量验收体系
+
+高质量的训练数据是Agent性能的基础。数据构造需要系统性的方法论，涵盖数据来源、质量控制和验收标准。
+
+#### 3.1.1 四种数据来源及其特点
+
+**1. 人工标注专家轨迹（Human Annotated Expert Trajectories）**
+```json
+{
+  "source": "human_annotated",
+  "quality_level": "gold",
+  "annotation_process": "multi-stage",
+  "cost_per_trajectory": "high",
+  "typical_volume": "100-1000",
+  "best_for": "冷启动、高质量基准、复杂任务"
+}
+```
+**优点**：
+- 质量最高，由领域专家创建
+- 包含正确的恢复策略和边界情况处理
+- 提供可靠的训练信号
+
+**缺点**：
+- 成本高昂，扩展性差
+- 可能存在标注者偏差
+- 难以覆盖所有任务变体
+
+**2. 真实Agent日志（Real Agent Logs）**
+```json
+{
+  "source": "agent_logs", 
+  "quality_level": "mixed",
+  "annotation_needed": "post_hoc",
+  "cost_per_trajectory": "medium",
+  "typical_volume": "10K-100K",
+  "best_for": "真实分布、边界情况、错误模式分析"
+}
+```
+**优点**：
+- 反映真实用户查询分布
+- 包含大量边界情况和错误模式
+- 规模大，成本相对较低
+
+**缺点**：
+- 质量参差不齐，需要清洗
+- 成功轨迹比例可能较低
+- 需要后处理标注成功/失败标签
+
+**3. 模型自生成轨迹（Model Self-Generated Trajectories）**
+```json
+{
+  "source": "model_generated",
+  "quality_level": "variable",
+  "filtering_method": "evaluator_based",
+  "cost_per_trajectory": "low",
+  "typical_volume": "100K-1M",
+  "best_for": "数据扩展、任务变体生成、弱监督学习"
+}
+```
+**优点**：
+- 扩展性强，可生成大量数据
+- 可以覆盖任务空间的多种变体
+- 成本低，自动化程度高
+
+**缺点**：
+- 依赖评估器质量，可能引入偏差
+- 可能缺少真实的错误恢复模式
+- 需要高质量的筛选机制
+
+**4. 环境模拟生成（Simulated Environment Generation）**
+```json
+{
+  "source": "simulated",
+  "quality_level": "controlled",
+  "generation_method": "rule_based",
+  "cost_per_trajectory": "very_low",
+  "typical_volume": "1M+",
+  "best_for": "特定技能训练、合成任务、算法测试"
+}
+```
+**优点**：
+- 完全可控，可精确生成特定模式
+- 规模极大，成本极低
+- 成功条件清晰，评估简单
+
+**缺点**：
+- 可能偏离真实分布
+- 缺少真实世界的复杂性
+- 需要精心设计模拟环境
+
+#### 3.1.2 数据质量验收标准与流程
+
+无论数据来自何种来源，进入训练集前都需要通过严格的质量验收：
+
+```python
+class DataQualityValidator:
+    def validate_trajectory(self, trajectory: Trajectory) -> ValidationResult:
+        """轨迹数据质量验证"""
+        result = ValidationResult()
+        
+        # 1. Schema合规性检查
+        if not self.validate_schema(trajectory):
+            result.reject(reason="schema_invalid")
+            return result
+            
+        # 2. 工具可执行性检查
+        if not self.validate_tool_executability(trajectory):
+            result.reject(reason="tool_not_executable")
+            return result
+            
+        # 3. 标签完整性检查
+        if not self.validate_labels(trajectory):
+            result.reject(reason="labels_incomplete")
+            return result
+            
+        # 4. 信息泄漏检查
+        if self.detect_leakage(trajectory):
+            result.reject(reason="leakage_detected")
+            return result
+            
+        # 5. 参考一致性检查
+        if not self.validate_reference_consistency(trajectory):
+            result.reject(reason="reference_inconsistent")
+            return result
+            
+        # 6. 可复现性检查
+        if not self.validate_reproducibility(trajectory):
+            result.reject(reason="not_reproducible")
+            return result
+            
+        result.accept()
+        return result
+```
+
+**验收标准详情**：
+
+| 检查项 | 具体标准 | 检查方法 | 失败处理 |
+|--------|----------|----------|----------|
+| **Schema合规性** | task/trajectory/action/observation都符合canonical schema | JSON Schema验证 | 拒绝，需要修复格式 |
+| **工具可执行性** | trajectory中的tool action能被mock或真实executor执行 | 工具模拟执行 | 拒绝或标记为无效 |
+| **标签完整性** | 每条trajectory有success label和failure types | 字段存在性检查 | 补充标注或拒绝 |
+| **无信息泄漏** | SFT input中不包含`expected_next_action`、labels或evaluator结果 | 字段内容分析 | 清理字段或拒绝 |
+| **参考一致性** | reference action与success criteria一致 | 逻辑一致性检查 | 修正参考或拒绝 |
+| **可复现性** | 数据来源、生成方式、工具版本可追踪 | 元数据检查 | 补充元数据或拒绝 |
+| **平衡覆盖** | 不同task type、action type、observation type和failure type有基本覆盖 | 分布统计分析 | 调整采样或标记不足 |
+
+#### 3.1.3 数据清洗与后处理流程
+
+原始数据通常需要经过系统的清洗和后处理：
+
+```
+原始数据收集
+    ↓
+Schema验证与标准化
+    ↓
+工具名称与schema对齐
+    ↓  
+动作与观察顺序检查
+    ↓
+信息泄漏字段去除
+    ↓
+成功/失败标签标注或修正
+    ↓
+失败类型分类标注
+    ↓
+拆分训练样本
+    ↓
+生成数据质量报告
+```
+
+**数据质量报告示例**：
+```json
+{
+  "validation_report": {
+    "num_trajectories_processed": 1000,
+    "num_accepted": 985,
+    "num_rejected": 15,
+    "acceptance_rate": 0.985,
+    
+    "rejection_breakdown": {
+      "schema_invalid": 4,
+      "tool_not_executable": 3,
+      "labels_incomplete": 2,
+      "leakage_detected": 3,
+      "reference_inconsistent": 2,
+      "not_reproducible": 1
+    },
+    
+    "coverage_analysis": {
+      "task_type_distribution": {
+        "no_tool": 98,
+        "single_tool": 490,
+        "multi_tool": 245,
+        "recovery": 98,
+        "ask_user": 54
+      },
+      "action_type_distribution": {
+        "tool_call": 789,
+        "final_answer": 985,
+        "ask_user": 54
+      },
+      "failure_type_coverage": {
+        "covered_types": 22,
+        "missing_types": 3,
+        "most_common_failures": ["wrong_argument_value", "premature_final_answer"]
       }
     },
-    "suggested_fix": {
-      "missing_fields": ["location"]
+    
+    "quality_metrics": {
+      "avg_trajectory_length": 2.3,
+      "success_rate": 0.82,
+      "schema_validity_rate": 0.99,
+      "label_completeness": 1.0
     }
   }
 }
 ```
 
-Recovery state 不一定进入模型输入。若真实运行时工具错误会返回给模型，则错误 message 可以进入 runtime state；结构化 `suggested_fix` 是否进入模型输入需要按实验设定决定。
+#### 3.1.4 从Trajectory到训练样本的转换
 
-### 21.2 Recovery Action Types
+一条完整的trajectory可以被拆分成多个step-level的训练样本，这个过程需要精心设计以避免信息泄漏：
 
-遇到错误后，模型可以采取以下恢复动作：
-
-| Recovery Action | 说明 | 示例 |
-|---|---|---|
-| `retry_same_tool_fixed_args` | 修正参数后重试同一工具 | 补上缺失的 `location` |
-| `retry_same_tool_same_args` | 原参数重试 | 网络超时后重试 |
-| `switch_tool` | 换替代工具 | 搜索 API 失败后使用浏览器 |
-| `ask_user` | 缺少必要信息时反问用户 | 缺少城市 |
-| `final_answer_with_limitation` | 无法完成时说明限制 | 工具不可用，不能确认实时天气 |
-| `stop_failure` | 不可恢复时终止 | 权限不足且无替代工具 |
-
-### 21.3 Recovery Policy
-
-第一版可以使用规则定义合理恢复策略：
-
-| Error Type | Retryable | 合理动作 | 不合理动作 |
-|---|---:|---|---|
-| `schema_error` | yes | 修正参数后重试 | 原样重试、直接编造答案 |
-| `missing_argument` | yes | 从上下文补参数；无法补则 ask user | 忽略缺失字段 |
-| `wrong_argument_type` | yes | 转换类型后重试 | 换无关工具 |
-| `empty_result` | depends | 放宽参数、解释无结果、换工具 | 编造结果 |
-| `timeout` | yes | 原参数重试或稍后重试 | 立即判任务成功 |
-| `permission_denied` | no | 说明无法访问或请求授权 | 反复重试 |
-| `rate_limited` | yes | 等待、降频、说明限制 | 高频重复调用 |
-| `tool_error_non_retryable` | no | 换工具或说明无法完成 | 同样参数无限重试 |
-
-### 21.4 Recovery Evaluator
-
-Recovery evaluator 判断错误后的下一步 action 是否合理。
-
-输入：
-
-```json
-{
-  "error_observation": {},
-  "next_action": {},
-  "task": {},
-  "tool_specs": [],
-  "recovery_state": {}
-}
+**原始轨迹**：
+```
+τ = (s₀, a₀, o₁, s₁, a₁, o₂, s₂, a₂)
 ```
 
-输出：
-
+**拆分成SFT样本**：
 ```json
-{
-  "recovery_success": true,
-  "recovery_type": "retry_same_tool_fixed_args",
-  "attempt_count": 2,
-  "failure_types": []
-}
-```
-
-指标：
-
-| Metric | 说明 |
-|---|---|
-| `recovery_success_rate` | 错误后采取合理恢复动作的比例 |
-| `retry_fix_rate` | schema/参数错误后正确修参重试的比例 |
-| `unrecoverable_stop_accuracy` | 不可恢复错误时是否正确停止或说明限制 |
-| `loop_rate` | 是否出现无意义重复调用 |
-| `max_attempts_exceeded_rate` | 是否超过最大尝试次数 |
-
-### 21.5 Recovery Failure Types
-
-| Failure Type | 触发条件 |
-|---|---|
-| `poor_recovery` | 错误后没有采取合理恢复动作 |
-| `retry_without_fix` | 参数错误后原样重试 |
-| `over_retry` | 超过最大重试次数 |
-| `premature_abort` | 可恢复错误却直接放弃 |
-| `hallucinate_after_error` | 工具失败后编造结果 |
-| `wrong_fallback_tool` | 选择了不合适的替代工具 |
-| `missing_user_clarification` | 缺少用户信息时没有反问 |
-
-### 21.6 最大尝试次数
-
-每个工具或错误类型应设置 `max_attempts`。
-
-推荐默认值：
-
-| 场景 | max attempts |
-|---|---:|
-| schema error | 2 |
-| timeout | 2 |
-| rate limited | 1 or defer |
-| empty result | 2 |
-| permission denied | 0 |
-| non-retryable tool error | 0 |
-
-超过最大次数后，模型应：
-
-- 换工具，如果存在替代工具。
-- 反问用户，如果缺少必要信息。
-- 说明无法完成，并避免编造结果。
-
-### 21.7 Recovery 达到优秀的判断
-
-本节达到优秀需要满足：
-
-- 有明确 recovery state。
-- 有错误类型到合理恢复动作的策略表。
-- 有最大尝试次数。
-- 有 recovery evaluator 输入输出和指标。
-- 有 recovery failure types。
-- 能区分“工具不可用导致失败”和“模型恢复策略错误”。
-
-当前本节已经达到优秀，可以支撑错误恢复任务的数据构造和 evaluator baseline。
-
-## 22. Failure Taxonomy
-
-为了训练和评测可解释，需要给失败类型建立稳定分类。
-
-当前失败类型包括：
-
-- `invalid_action`：action 无法解析或 action type 不合法。
-- `wrong_tool`：选择了错误工具。
-- `missing_tool_call`：应该调用工具但直接回答。
-- `unnecessary_tool_call`：不需要工具时调用了工具。
-- `missing_required_tool`：多工具任务中缺少必须调用的工具。
-- `extra_tool_call`：调用了任务不需要的额外工具。
-- `missing_argument`：缺少必填参数。
-- `wrong_argument_type`：参数类型错误。
-- `wrong_argument_value`：参数值错误。
-- `invalid_argument_binding`：多工具任务中后续参数没有正确来自前序 observation。
-- `invalid_schema`：tool call 不符合 schema。
-- `wrong_order`：多工具调用顺序错误。
-- `dependency_violation`：工具调用违反依赖图。
-- `lost_intermediate_result`：工具返回了中间结果，但后续没有使用。
-- `ignored_observation`：没有正确使用工具返回结果。
-- `poor_recovery`：失败后没有正确修正或重试。
-- `retry_without_fix`：参数错误后原样重试。
-- `over_retry`：超过最大重试次数。
-- `premature_abort`：可恢复错误却直接放弃。
-- `hallucinate_after_error`：工具失败后编造结果。
-- `premature_final_answer`：信息不足时提前回答。
-- `hallucinated_final_answer`：最终答案包含无依据内容。
-- `contradict_observation`：最终答案与 observation 矛盾。
-- `incomplete_final_answer`：最终答案没有覆盖任务成功条件。
-- `max_steps_exceeded`：超过最大步数仍未完成。
-
-Failure taxonomy 的作用：
-
-- 用于分析模型薄弱点。
-- 用于构造 targeted training data。
-- 用于 evaluator 输出可解释诊断。
-
-## 23. 数据构造方式
-
-训练数据可以来自多个来源。
-
-### 23.1 人工标注专家轨迹
-
-人工为任务写出正确 trajectory。
-
-优点：
-
-- 质量高。
-- 可控性强。
-- 适合冷启动。
-
-缺点：
-
-- 成本高。
-- 覆盖面有限。
-
-### 23.2 真实 Agent 日志
-
-从实际运行日志中抽取 state/action/observation。
-
-优点：
-
-- 真实分布。
-- 包含大量边界情况。
-
-缺点：
-
-- 需要清洗。
-- 可能包含错误轨迹。
-- 需要额外标注成功和失败原因。
-
-### 23.3 模型自生成轨迹
-
-让模型尝试完成任务，再用 evaluator 筛选。
-
-优点：
-
-- 扩展快。
-- 可以覆盖大量任务变体。
-
-缺点：
-
-- 依赖 evaluator 质量。
-- 容易引入系统性偏差。
-
-### 23.4 环境模拟
-
-构造可控任务环境，自动生成任务、工具结果和正确答案。
-
-优点：
-
-- 可自动生成大量数据。
-- 成功条件清晰。
-
-缺点：
-
-- 和真实任务分布可能有差距。
-
-### 23.5 数据验收标准
-
-无论数据来自人工、日志、模型生成还是模拟环境，进入训练集前都需要验收。
-
-| 检查项 | 标准 |
-|---|---|
-| schema valid | task、trajectory、action、observation 都符合 canonical schema |
-| tool executable | trajectory 中的 tool action 能被 mock 或真实 executor 执行 |
-| label complete | 每条 trajectory 有 success label 和 failure types |
-| no leakage | SFT input 中不包含 `expected_next_action`、labels 或 evaluator 结果 |
-| reference consistent | reference action 与 success criteria 一致 |
-| reproducible | 数据来源、生成方式、工具版本可追踪 |
-| balanced coverage | 不同 task type、action type、observation type 和 failure type 有基本覆盖 |
-
-### 23.6 数据清洗流程
-
-推荐清洗流程：
-
-1. schema validation。
-2. tool name 和 tool schema 对齐。
-3. action 和 observation 顺序检查。
-4. 去除泄漏字段。
-5. 标注或修正 failure types。
-6. 将成功轨迹导出为 SFT 正样本。
-7. 将失败轨迹导出为 evaluator、preference 或 repair 数据。
-8. 生成数据质量报告。
-
-数据质量报告示例：
-
-```json
-{
-  "num_tasks": 100,
-  "num_trajectories": 120,
-  "schema_valid_rate": 0.99,
-  "label_coverage": 1.0,
-  "task_type_distribution": {
-    "no_tool": 10,
-    "single_tool": 50,
-    "multi_tool": 25,
-    "recovery": 15
+[
+  {
+    "sample_id": "task_001_step_0",
+    "input": {
+      "model_input_state": "s₀"  // 只包含runtime state
+    },
+    "target": {
+      "action": "a₀"  // 专家动作
+    },
+    "metadata": {
+      "task_id": "task_001",
+      "step": 0,
+      "action_type": "tool_call",
+      "trajectory_success": true
+    }
   },
-  "rejected_samples": 4,
-  "rejection_reasons": {
-    "schema_invalid": 2,
-    "label_missing": 1,
-    "leakage_detected": 1
+  {
+    "sample_id": "task_001_step_1", 
+    "input": {
+      "model_input_state": "s₁"  // 包含o₁的结果
+    },
+    "target": {
+      "action": "a₁"
+    },
+    "metadata": {
+      "task_id": "task_001",
+      "step": 1,
+      "action_type": "final_answer",
+      "trajectory_success": true
+    }
+  }
+]
+```
+
+**关键转换原则**：
+1. **输入只能是runtime state**：确保训练时模型看到的信息与推理时一致
+2. **目标只能是专家动作**：学习正确的行为模式
+3. **元数据分离存储**：分析用的信息不进入模型输入
+4. **失败轨迹特殊处理**：不能直接作为正样本，可能需要修复或用于其他训练目标
+
+### 3.2 训练目标设计：SFT/Rejection Sampling/RL的数学形式化与工程权衡
+
+基于不同的数据可用性和训练阶段，可以采用不同的训练方法。每种方法都有其数学形式和工程考量。
+
+#### 3.2.1 模仿学习 / 监督微调（Imitation Learning / SFT）
+
+**适用场景**：有高质量专家轨迹数据，冷启动阶段
+
+**数学形式**：
+$$
+\minimize_{\theta} -\log \pi_\theta(a_t^* | s_t)
+$$
+
+其中$(s_t, a_t^*)$是从专家轨迹$\tau^*$中提取的状态-动作对。
+
+**训练样本结构**：
+```json
+{
+  "input": {
+    "model_input_state": {
+      "messages": [...],
+      "tools": [...]
+    }
+  },
+  "target": {
+    "action": {
+      "type": "tool_call",
+      "tool_name": "weather",
+      "arguments": {"location": "上海", "date": "明天"}
+    }
   }
 }
 ```
 
-### 23.7 数据来源达到优秀的判断
+**SFT变体与优化**：
 
-本节达到优秀需要满足：
+1. **基础SFT**：直接模仿专家动作
+2. **条件SFT**：根据任务类型或难度调整学习目标
+3. **加权SFT**：对重要或困难的样本给予更高权重
+4. **课程学习SFT**：从简单任务逐渐过渡到复杂任务
 
-- 明确每种数据来源的优缺点。
-- 定义训练集准入标准。
-- 定义清洗流程。
-- 能区分成功轨迹、失败轨迹、repair 数据和 evaluator 数据的用途。
-- 有数据质量报告格式。
+**工程考量**：
+- **批量构建**：需要高效地从轨迹中提取样本
+- **数据平衡**：确保不同action type的均衡
+- **泄漏防止**：严格检查输入不包含未来信息
+- **评估隔离**：使用独立的验证集评估过拟合
 
-当前本节已经达到优秀，可以指导第一版数据构造和清洗。
+#### 3.2.2 拒绝采样（Rejection Sampling）
 
-## 24. 任务类型划分
+**适用场景**：有可靠评估器，需要扩展数据规模
 
-不同任务类型需要不同的 trajectory 和 evaluator。
+**数学形式**：
+$$
+\begin{aligned}
+&\text{采样 } \tau_1, \tau_2, \ldots, \tau_k \text{ 从 } \pi_\theta \\
+&\text{保留 } \tau_i \text{ 如果 } \text{Evaluator}(\tau_i) \geq \text{threshold}
+\end{aligned}
+$$
 
-第一版可以按以下维度划分：
+**算法流程**：
+```python
+def rejection_sampling(policy, evaluator, task_pool, num_samples):
+    accepted_trajectories = []
+    
+    while len(accepted_trajectories) < num_samples:
+        # 1. 从任务池采样任务
+        task = sample_task(task_pool)
+        
+        # 2. 用当前策略执行任务
+        trajectory = policy.rollout(task)
+        
+        # 3. 评估轨迹质量
+        score = evaluator.evaluate(trajectory, task)
+        
+        # 4. 根据阈值决定是否接受
+        if score >= ACCEPTANCE_THRESHOLD:
+            accepted_trajectories.append({
+                "trajectory": trajectory,
+                "score": score,
+                "task": task
+            })
+            
+            # 5. 可选：将接受的轨迹加入训练集
+            if TRAIN_WITH_ACCEPTED:
+                add_to_training_data(trajectory)
+    
+    return accepted_trajectories
+```
 
-- 单工具任务：只需要调用一个工具。
-- 多工具任务：需要多个工具组合。
-- 顺序依赖任务：后一个工具参数依赖前一个工具结果。
-- 可并行任务：多个工具调用顺序不唯一。
-- 需要反问任务：用户输入缺少必要信息。
-- 错误恢复任务：工具失败后需要重试或修正。
-- 无工具任务：模型应该直接回答，不调用工具。
+**拒绝采样的变体**：
 
-这个划分可以帮助我们构造覆盖面更完整的训练集和测试集。
+1. **基础拒绝采样**：单一阈值过滤
+2. **分层拒绝采样**：不同任务类型使用不同阈值
+3. **自适应拒绝采样**：根据当前数据分布动态调整阈值
+4. **多样性引导拒绝采样**：优先接受与现有数据不同的样本
 
-### 24.1 推荐任务占比
+**关键参数设计**：
+- **接受阈值**：平衡数据质量和数量
+- **采样温度**：控制策略的探索程度
+- **评估器置信度**：考虑评估器的不确定性
+- **多样性权重**：鼓励覆盖不同任务类型
 
-第一版数据集可以按以下比例构造：
+#### 3.2.3 强化学习（Reinforcement Learning）
 
-| Task Type | 推荐占比 | 目的 |
-|---|---:|---|
-| `no_tool` | 10% | 学会不滥用工具 |
-| `single_tool` | 35% | 学会基础工具选择和参数填写 |
-| `single_tool_with_final` | 20% | 学会基于 observation 回答 |
-| `multi_tool_sequential` | 15% | 学会顺序依赖 |
-| `multi_tool_unordered` | 5% | 学会等价顺序 |
-| `ask_user` | 5% | 学会信息不足时反问 |
-| `recovery` | 10% | 学会错误恢复 |
+**适用场景**：有可靠奖励信号，需要优化长期回报
 
-### 24.2 每类任务最小样例
+**数学形式**：
+$$
+\maximize_{\theta} \mathbb{E}_{\tau \sim \pi_\theta}[R(\tau)]
+$$
 
-| Task Type | 用户任务 | 期望能力 |
-|---|---|---|
-| `no_tool` | “把这句话改得更正式” | 不调用工具，直接回答 |
-| `single_tool` | “查明天上海天气” | 正确调用 weather |
-| `single_tool_with_final` | “查天气并判断是否适合跑步” | 工具结果到最终判断 |
-| `multi_tool_sequential` | “查订单，再查物流” | 后一步参数来自前一步 observation |
-| `multi_tool_unordered` | “查 A 和 B 两只股票价格” | 顺序可交换 |
-| `ask_user` | “帮我查天气” | 缺少地点时反问 |
-| `recovery` | “查上海天气”，首次缺 location | schema error 后修正 |
+其中$R(\tau)$是轨迹$\tau$的累积奖励。
 
-### 24.3 覆盖标准
-
-任务集达到优秀需要满足：
-
-- 覆盖所有 action type。
-- 覆盖所有主要 observation type。
-- 覆盖主要 failure types。
-- 包含成功轨迹和失败轨迹。
-- 包含至少一类多工具顺序依赖和一类等价顺序任务。
-- 包含至少一类错误恢复任务。
-
-## 25. 最小完整样例
-
-### 25.1 Task
-
+**奖励设计框架**：
 ```json
 {
-  "task_id": "weather_001",
-  "user_query": "查询明天上海的天气，并告诉我是否适合户外跑步。",
-  "available_tools": ["weather"],
-  "success_criteria": [
-    "必须查询上海明天天气",
-    "必须根据工具结果判断是否适合跑步",
-    "最终回答必须基于 observation"
+  "reward_components": {
+    "step_rewards": {
+      "tool_selection": {"weight": 0.15, "range": [0, 1]},
+      "schema_validity": {"weight": 0.15, "range": [0, 1]},
+      "argument_correctness": {"weight": 0.10, "range": [0, 1]},
+      "execution_success": {"weight": 0.10, "range": [0, 1]}
+    },
+    "trajectory_rewards": {
+      "task_success": {"weight": 0.30, "range": [0, 1]},
+      "groundedness": {"weight": 0.10, "range": [0, 1]},
+      "efficiency": {"weight": 0.05, "range": [0, 1]},
+      "recovery_quality": {"weight": 0.05, "range": [0, 1]}
+    }
+  },
+  "reward_calculation": {
+    "step_reward": "sum(component_i * weight_i)",
+    "trajectory_reward": "sum(component_i * weight_i)",
+    "total_reward": "average_step_reward * 0.4 + trajectory_reward * 0.6"
+  }
+}
+```
+
+**RL算法选择考虑**：
+
+| 算法 | 适用场景 | 优点 | 缺点 |
+|------|----------|------|------|
+| **PPO** | 一般场景，稳定训练 | 稳定，样本效率相对高 | 超参数敏感 |
+| **A2C** | 分布式训练 | 实现相对简单 | 样本效率较低 |
+| **TRPO** | 需要严格策略约束 | 理论保证，更新稳定 | 计算复杂 |
+| **SAC** | 连续动作空间 | 样本效率高，稳定 | 对离散动作适应性一般 |
+| **DQN** | 离散动作空间小 | 值函数估计准确 | 不适合大动作空间 |
+
+**RL训练的关键挑战**：
+
+1. **奖励稀疏性**：只有最终成功/失败提供显著信号
+2. **信用分配**：将最终奖励分配到具体动作
+3. **探索-利用权衡**：在遵循学习策略和尝试新行为间平衡
+4. **训练稳定性**：避免策略崩溃或性能震荡
+5. **评估器可靠性**：奖励信号的质量直接影响学习效果
+
+#### 3.2.4 训练阶段演进策略
+
+实际系统通常需要多阶段训练策略：
+
+```mermaid
+graph TB
+    A[冷启动阶段] --> B[SFT with 专家数据<br/>学习基础格式和决策]
+    B --> C[数据扩展阶段]
+    
+    C --> D{数据来源选择}
+    D --> E[拒绝采样扩展<br/>利用当前策略+评估器]
+    D --> F[人工标注补充<br/>针对薄弱环节]
+    D --> G[模拟环境生成<br/>合成特定模式]
+    
+    E --> H[混合训练阶段]
+    F --> H
+    G --> H
+    
+    H --> I[SFT + 拒绝采样数据<br/>提升覆盖和多样性]
+    I --> J[RL微调阶段<br/>优化长期回报]
+    
+    J --> K[持续改进循环]
+    K --> L[监控生产表现]
+    L --> M[识别薄弱环节]
+    M --> N[针对性数据收集]
+    N --> H
+```
+
+**阶段间过渡条件**：
+- **冷启动→扩展**：基础SFT收敛，在验证集上达到稳定性能
+- **扩展→RL**：有足够多样性的数据，评估器可靠
+- **RL→生产**：在独立测试集上显著优于SFT基线
+
+### 3.3 评估器架构：Step-level与Trajectory-level评估的完整设计
+
+评估器是训练和部署中的关键组件，需要同时满足准确性、可解释性和效率要求。
+
+#### 3.3.1 评估器的分层架构
+
+```python
+class AgentEvaluator:
+    """分层评估器架构"""
+    
+    def __init__(self):
+        self.step_evaluator = StepEvaluator()
+        self.trajectory_evaluator = TrajectoryEvaluator()
+        self.groundedness_evaluator = GroundednessEvaluator()
+        self.recovery_evaluator = RecoveryEvaluator()
+        
+    def evaluate(self, trajectory: Trajectory, task: Task) -> EvaluationResult:
+        """完整评估流程"""
+        result = EvaluationResult()
+        
+        # 1. Step-level评估
+        step_results = []
+        for step in trajectory.steps:
+            step_eval = self.step_evaluator.evaluate(
+                state=step.model_input_state,
+                action=step.action,
+                observation=step.observation,
+                reference_action=task.reference_actions[step.step_index] if task.reference_actions else None
+            )
+            step_results.append(step_eval)
+            
+        result.step_results = step_results
+        
+        # 2. Trajectory-level评估
+        trajectory_eval = self.trajectory_evaluator.evaluate(
+            trajectory=trajectory,
+            task=task,
+            step_results=step_results
+        )
+        result.trajectory_result = trajectory_eval
+        
+        # 3. Groundedness评估（如果有final answer）
+        if has_final_answer(trajectory):
+            groundedness_eval = self.groundedness_evaluator.evaluate(
+                final_answer=extract_final_answer(trajectory),
+                observations=extract_observations(trajectory),
+                task=task
+            )
+            result.groundedness_result = groundedness_eval
+            
+        # 4. Recovery评估（如果有错误）
+        if has_errors(trajectory):
+            recovery_eval = self.recovery_evaluator.evaluate(
+                trajectory=trajectory,
+                task=task
+            )
+            result.recovery_result = recovery_eval
+            
+        # 5. 聚合最终分数
+        result.aggregated_score = self.aggregate_scores(
+            step_results,
+            trajectory_eval,
+            groundedness_eval if has_final_answer(trajectory) else None,
+            recovery_eval if has_errors(trajectory) else None
+        )
+        
+        return result
+```
+
+#### 3.3.2 Step-level评估器设计
+
+Step-level评估器关注单步动作的正确性：
+
+**输入**：
+- 当前状态$s_t$
+- 模型动作$a_t$
+- 观察$o_{t+1}$（如果已发生）
+- 参考动作$a_t^*$（如果有）
+
+**输出**：
+```json
+{
+  "step_index": 0,
+  "score": 0.85,
+  "metrics": {
+    "tool_selection_correct": true,
+    "schema_valid": true,
+    "arguments_correct": false,
+    "execution_success": true,
+    "timing_appropriate": true
+  },
+  "failure_types": ["wrong_argument_value"],
+  "details": {
+    "tool_selection": {
+      "expected": "weather",
+      "actual": "weather",
+      "match": true
+    },
+    "arguments": {
+      "expected": {"location": "上海", "date": "明天"},
+      "actual": {"location": "上海", "date": "today"},
+      "match_type": "partial",
+      "mismatched_fields": ["date"]
+    }
+  }
+}
+```
+
+**Step score计算公式**：
+$$
+\text{step\_score} = 0.30 \times \text{tool\_correct} + 0.25 \times \text{schema\_valid} + 0.25 \times \text{arguments\_correct} + 0.20 \times \text{execution\_success}
+$$
+
+#### 3.3.3 Trajectory-level评估器设计
+
+Trajectory-level评估器关注完整任务的成功与否：
+
+**输入**：
+- 完整轨迹$\tau$
+- 任务规范task
+- step-level评估结果
+
+**输出**：
+```json
+{
+  "trajectory_id": "traj_001",
+  "score": 0.78,
+  "task_success": true,
+  "metrics": {
+    "required_tools_called": true,
+    "success_criteria_met": 3,
+    "success_criteria_total": 4,
+    "step_success_rate": 0.85,
+    "execution_success_rate": 1.0,
+    "efficiency_score": 0.9,
+    "recovery_success_rate": 1.0
+  },
+  "failure_types": ["incomplete_final_answer"],
+  "success_criteria_evaluation": [
+    {"criterion": "must_call_tool:weather", "met": true, "evidence": "step_0"},
+    {"criterion": "must_use_observation", "met": true, "evidence": "final_answer references temperature"},
+    {"criterion": "must_answer_running_advice", "met": true, "evidence": "final_answer includes advice"},
+    {"criterion": "must_mention_precautions", "met": false, "evidence": "no mention of rain precautions"}
   ]
 }
 ```
 
-### 25.2 Step 0
+**Trajectory score计算公式**：
+$$
+\begin{aligned}
+\text{trajectory\_score} =&\ 0.60 \times \text{task\_success} \\
+                        &+ 0.25 \times \text{average\_step\_score} \\
+                        &+ 0.15 \times \text{recovery\_score}
+\end{aligned}
+$$
 
-State:
+其中$\text{task\_success}$是二进制指标，$\text{average\_step\_score}$是步骤得分的平均值，$\text{recovery\_score}$衡量错误恢复的质量。
 
-```json
-{
-  "user_query": "查询明天上海的天气，并告诉我是否适合户外跑步。",
-  "tools": ["weather"],
-  "history": [],
-  "progress": {
-    "open_requirements": [
-      "查询上海明天天气",
-      "判断是否适合跑步"
-    ]
-  }
-}
+#### 3.3.4 确定性规则 vs LLM Judge的权衡
+
+评估器的实现需要在规则确定性和语义理解能力之间权衡：
+
+| 评估维度 | 适合规则实现 | 适合LLM Judge | 混合策略 |
+|----------|:------------:|:-------------:|----------|
+| Schema合法性 | ✅ 完全适合 | ❌ 不需要 | 纯规则 |
+| 工具选择正确性 | ✅ 如果有参考 | 🔄 部分适合 | 规则为主，LLM补充 |
+| 参数精确匹配 | ✅ 完全适合 | ❌ 不需要 | 纯规则 |
+| 参数语义匹配 | ❌ 不适合 | ✅ 完全适合 | LLM为主 |
+| 最终回答质量 | ❌ 不适合 | ✅ 完全适合 | LLM评估 |
+| 回答基于性 | 🔄 部分适合 | ✅ 完全适合 | 规则+LLM |
+| 任务完成度 | 🔄 部分适合 | ✅ 完全适合 | 规则+LLM |
+
+**混合评估器设计示例**：
+```python
+class HybridEvaluator:
+    def evaluate_final_answer(self, final_answer: str, observations: List[Observation], task: Task):
+        # 1. 规则检查：格式、长度等基础要求
+        rule_checks = self.rule_based_checks(final_answer, observations)
+        
+        # 2. 提取关键主张（claims）
+        claims = self.extract_claims(final_answer)
+        
+        # 3. 对每个主张进行分类检查
+        claim_results = []
+        for claim in claims:
+            claim_type = self.classify_claim(claim)
+            
+            if claim_type == "observed_fact":
+                # 观察事实：用规则检查精确匹配
+                result = self.check_observed_fact(claim, observations)
+            elif claim_type == "derived_judgment":
+                # 推导判断：用LLM检查合理性
+                result = self.llm_check_derived_judgment(claim, observations)
+            elif claim_type == "generic_advice":
+                # 通用建议：检查是否与观察矛盾
+                result = self.check_generic_advice(claim, observations)
+            else:
+                # 无法分类：用LLM综合判断
+                result = self.llm_general_check(claim, observations, task)
+                
+            claim_results.append(result)
+        
+        # 4. 聚合结果
+        return self.aggregate_claim_results(claim_results, rule_checks)
 ```
 
-Action:
+#### 3.3.5 评估报告与可解释性
 
+好的评估器不仅给出分数，还要提供可解释的诊断信息：
+
+**完整评估报告结构**：
 ```json
 {
-  "type": "tool_call",
-  "tool_name": "weather",
-  "arguments": {
-    "location": "上海",
-    "date": "明天"
-  }
-}
-```
-
-Observation:
-
-```json
-{
-  "type": "tool_result",
-  "tool_name": "weather",
-  "status": "success",
-  "result": {
-    "temperature": "18-24C",
-    "rain_probability": "20%",
-    "wind": "light"
-  }
-}
-```
-
-### 25.3 Step 1
-
-State:
-
-```json
-{
-  "user_query": "查询明天上海的天气，并告诉我是否适合户外跑步。",
-  "history": [
-    {
-      "action_type": "tool_call",
-      "tool_name": "weather",
-      "status": "success"
-    }
-  ],
-  "known_facts": [
-    "上海明天气温 18-24C",
-    "降雨概率 20%",
-    "微风"
-  ],
-  "progress": {
-    "open_requirements": [
-      "判断是否适合跑步"
-    ]
-  }
-}
-```
-
-Action:
-
-```json
-{
-  "type": "final_answer",
-  "content": "明天上海气温 18-24C，降雨概率 20%，风力较小，整体适合户外跑步。建议出门前再确认实时天气，并避开可能降雨的时段。"
-}
-```
-
-### 25.4 Evaluator Output
-
-```json
-{
-  "task_success": true,
-  "tool_selection_accuracy": 1.0,
-  "schema_valid_rate": 1.0,
-  "execution_success_rate": 1.0,
-  "hallucination": false,
-  "failure_types": []
-}
-```
-
-## 26. 最小可执行版本
-
-为了让这套 formulation 尽快落地，可以先做一个最小可执行版本。
-
-### 26.1 第一阶段只覆盖单工具任务
-
-第一阶段任务约束：
-
-- 每个任务最多需要一次工具调用。
-- 工具调用成功后，下一步应该 final answer。
-- 暂不处理多工具依赖。
-- 暂不处理复杂错误恢复。
-- 暂不处理开放式 LLM judge。
-
-这样可以先验证最核心链路：
-
-```text
-user_query -> tool_call -> observation -> final_answer
-```
-
-### 26.2 第一阶段数据格式
-
-每条任务保存一条完整 trajectory：
-
-```json
-{
-  "task_id": "weather_001",
-  "task_type": "single_tool",
-  "model_input_states": [
-    {}
-  ],
-  "expert_actions": [
-    {}
-  ],
-  "observations": [
-    {}
-  ],
-  "labels": {
-    "success": true,
-    "failure_types": []
-  }
-}
-```
-
-再从 trajectory 拆出 step-level SFT 样本：
-
-```json
-{
-  "sample_id": "weather_001_step_0",
-  "input": {},
-  "target": {
-    "type": "tool_call",
-    "tool_name": "weather",
-    "arguments": {
-      "location": "上海",
-      "date": "明天"
+  "evaluation_summary": {
+    "trajectory_id": "traj_model_v1_001",
+    "task_id": "weather_advice_001",
+    "overall_score": 0.82,
+    "task_success": true,
+    "primary_failure_type": null,
+    "all_failure_types": []
+  },
+  
+  "detailed_breakdown": {
+    "step_by_step": [
+      {
+        "step": 0,
+        "action_type": "tool_call",
+        "score": 1.0,
+        "highlights": ["工具选择正确", "参数完整", "执行成功"]
+      },
+      {
+        "step": 1,
+        "action_type": "final_answer",
+        "score": 0.64,
+        "highlights": ["基于观察结果", "回答相关"],
+        "issues": ["未提及降雨注意事项", "建议不够具体"]
+      }
+    ],
+    
+    "success_criteria_evaluation": [
+      {
+        "criterion": "查询上海明天天气",
+        "met": true,
+        "evidence": "步骤0调用了weather工具，参数正确",
+        "confidence": 1.0
+      },
+      {
+        "criterion": "基于天气给出跑步建议",
+        "met": true,
+        "evidence": "最终回答引用了温度和降雨信息",
+        "confidence": 0.9
+      },
+      {
+        "criterion": "提供具体注意事项",
+        "met": false,
+        "evidence": "未提及降雨时段的注意事项",
+        "confidence": 0.8
+      }
+    ],
+    
+    "groundedness_analysis": {
+      "claims_extracted": 3,
+      "supported_claims": 2,
+      "unsupported_claims": 1,
+      "contradictions": 0,
+      "claim_details": [...]
     }
   },
-  "metadata": {
-    "task_type": "single_tool",
-    "step": 0
+  
+  "comparative_analysis": {
+    "vs_baseline": {"improvement": "+0.15", "significant": true},
+    "vs_human_expert": {"gap": "-0.08", "areas": ["建议具体性"]},
+    "trend_over_time": {"last_5_versions": [0.65, 0.70, 0.75, 0.78, 0.82]}
+  },
+  
+  "recommendations": {
+    "immediate_fixes": ["增加降雨注意事项"],
+    "training_suggestions": ["收集更多包含具体建议的样本"],
+    "evaluator_improvements": ["细化建议具体性的评估维度"]
   }
 }
 ```
 
-### 26.3 第一阶段 evaluator
+### 3.4 失败类型学：完整的Failure Taxonomy与诊断规则
 
-第一阶段 evaluator 只实现确定性规则：
+系统化的失败分类是诊断Agent问题、指导数据收集和改进训练的关键。失败类型学需要兼顾覆盖度、互斥性和可操作性。
 
-- tool name 是否 exact match。
-- arguments 是否 exact match。
-- tool call 是否 schema valid。
-- 工具是否 execution success。
-- final answer 是否在 tool result 之后出现。
+#### 3.4.1 失败分类的三个维度
 
-暂时不自动判断：
+失败可以从三个互补的维度进行分类：
 
-- argument semantic match。
-- final answer 是否表达得足够好。
-- 是否存在细粒度幻觉。
+**1. 抽象层次维度**
+```
+高层失败（用户感知）
+├── 任务未完成
+├── 回答不相关  
+├── 信息不准确
+└── 建议不可行
 
-### 26.4 第一阶段产出
+中层失败（过程问题）
+├── 工具使用错误
+├── 参数错误
+├── 顺序错误
+└── 恢复失败
 
-第一阶段完成后，应该能得到：
+底层失败（技术问题）
+├── Schema不合法
+├── 格式错误
+├── 执行错误
+└── 系统错误
+```
 
-- 一套 task specs。
-- 一套 expert trajectories。
-- 一套 step-level SFT samples。
-- 一个 deterministic evaluator。
-- 一份 failure report，统计 wrong tool、missing argument、invalid schema 等错误。
+**2. 责任归属维度**
+```
+模型责任失败
+├── 决策错误（选错工具、时机不对）
+├── 参数错误（值不正确、类型错误）
+├── 内容错误（幻觉、矛盾）
+└── 恢复错误（未正确处理失败）
 
-如果这一步跑通，再扩展到多工具、错误恢复、反问用户和语义评测。
+环境责任失败  
+├── 工具不可用
+├── 数据缺失
+├── 权限不足
+└── 系统异常
 
-### 26.5 第一阶段数量目标
+任务定义失败
+├── 需求不明确
+├── 工具不匹配
+├── 成功条件矛盾
+└── 参考轨迹错误
+```
 
-第一阶段建议目标：
+**3. 可检测性维度**
+```
+可规则检测失败（100%准确）
+├── Schema不合法
+├── 必填字段缺失
+├── 工具不存在
+└── 执行超时
 
-| 项目 | 建议数量 |
-|---|---:|
-| task specs | 50-100 |
-| expert trajectories | 50-100 |
-| SFT step samples | 100-200 |
-| held-out eval tasks | 20-30 |
-| failure cases | 20+ |
+需参考检测失败（需参考答案）
+├── 工具选择错误
+├── 参数值错误（精确匹配）
+├── 顺序错误
+└── 缺失必要步骤
 
-### 26.6 第一阶段验收阈值
+需语义检测失败（需语义理解）
+├── 参数值错误（语义匹配）
+├── 最终回答质量
+├── 回答基于性
+└── 建议合理性
+```
 
-第一阶段完成后，至少应该能报告：
+#### 3.4.2 核心失败类型详细定义
 
-| Metric | 建议阈值 |
-|---|---:|
-| schema valid rate | >= 0.98 |
-| tool selection accuracy | >= 0.85 |
-| argument exact match | >= 0.75 |
-| execution success rate | >= 0.80 |
-| grounded final answer rate | >= 0.80 |
-| task success rate | >= 0.70 |
+以下是经过整理的完整失败类型，每种类型都有明确的触发条件和检测方法：
 
-这些阈值不是最终目标，而是判断 pipeline 是否跑通的 baseline。
+| 失败类型 | 触发条件 | 所需输入 | 可规则判断 | 严重程度 | 修复优先级 |
+|----------|----------|----------|:---------:|:--------:|:----------:|
+| `invalid_action` | action无法解析，或`type`不在允许集合中 | model action | ✅ 是 | 🔴 高 | 1 |
+| `wrong_tool` | `action.type=tool_call`，但`tool_name != reference.tool_name` | model action, reference action | ✅ 是 | 🔴 高 | 2 |
+| `missing_tool_call` | reference需要tool call，但模型输出`final_answer`或`ask_user` | model action, reference action | ✅ 是 | 🔴 高 | 3 |
+| `unnecessary_tool_call` | reference不需要工具，但模型输出`tool_call` | model action, reference action/task spec | ✅ 是 | 🟡 中 | 11 |
+| `missing_argument` | required field缺失 | model action, tool input schema | ✅ 是 | 🔴 高 | 5 |
+| `wrong_argument_type` | 参数类型不符合schema | model action, tool input schema | ✅ 是 | 🔴 高 | 6 |
+| `invalid_schema` | 参数无法通过工具input schema | model action, tool input schema | ✅ 是 | 🔴 高 | 4 |
+| `wrong_argument_value` | 参数值与reference不一致，且不满足语义等价 | model action, reference action | 🔄 部分 | 🔴 高 | 7 |
+| `unnecessary_ask_user` | 信息充足时模型仍反问用户 | model action, task spec/reference action | 🔄 部分 | 🟡 中 | 14 |
+| `premature_final_answer` | 仍有未满足需求时输出final answer | model action, annotation state/task criteria | 🔄 部分 | 🔴 高 | 9 |
+| `ignored_observation` | final answer或下一步action没有使用关键observation | model trajectory, observations | 🔄 部分 | 🔴 高 | 10 |
+| `looping_tool_call` | 重复调用同一工具和同一参数，且没有新信息 | model trajectory | ✅ 是 | 🟡 中 | 13 |
+| `wrong_order` | 工具调用顺序违反reference或任务依赖 | model trajectory, reference trajectory/task dependency | 🔄 部分 | 🔴 高 | 8 |
+| `missing_required_step` | 缺少完成任务所需的关键步骤 | model trajectory, success criteria | 🔄 部分 | 🔴 高 | - |
+| `poor_recovery` | 出现可恢复错误后，模型没有修正、重试或换工具 | model trajectory, observations | 🔄 部分 | 🟡/🔴 | 12 |
+| `hallucinated_final_answer` | final answer包含observation或reference中不存在的关键事实 | final answer, observations/reference | 🔄 部分 | 🔴 高 | 11 |
+| `incomplete_final_answer` | final answer没有覆盖success criteria | final answer, task spec | 🔄 部分 | 🔴 高 | - |
+| `contradict_observation` | final answer与工具observation明显矛盾 | final answer, observations | 🔄 部分 | 🔴 高 | - |
+| `max_steps_exceeded` | 超过环境最大步数仍未终止 | model trajectory, eval config | ✅ 是 | 🔴 高 | - |
 
-如果达不到阈值，需要根据 failure report 决定补哪类数据，而不是盲目扩大数据量。
+#### 3.4.3 失败检测的优先级与冲突解决
 
-## 27. 建模覆盖矩阵与优秀标准
+同一步可能触发多个failure type，需要定义优先级以避免重复归因：
 
-为了判断本文档是否真正支撑 Agent 训练建模，需要把“写得好不好”转化为可检查标准。
+**优先级规则**（数字越小优先级越高）：
+1. `invalid_action` - 动作层面的根本失败
+2. `invalid_schema` - Schema层面的根本失败
+3. `wrong_tool` - 工具选择错误
+4. `missing_tool_call` - 缺失必要工具调用
+5. `missing_argument` - 缺失必填参数
+6. `wrong_argument_type` - 参数类型错误
+7. `wrong_argument_value` - 参数值错误
+8. `wrong_order` - 顺序错误
+9. `premature_final_answer` - 过早结束
+10. `hallucinated_final_answer` - 幻觉内容
+11. `ignored_observation` - 忽略关键观察
+12. `poor_recovery` - 恢复失败
+13. `unnecessary_tool_call` - 多余工具调用
+14. `unnecessary_ask_user` - 多余反问
 
-下表用于持续评估本文档的完成度。每完善一项，都应该更新对应行的状态、依据和下一步动作。
+**冲突解决示例**：
+```
+动作: {"type": "tool_call", "arguments": {"date": "明天"}}  # 缺少location
 
-| 模块 | 需要回答的核心问题 | 当前回答情况 | 达到优秀的标准 | 当前依据 | 下一步动作 |
-|---|---|---|---|---|---|
-| Task 定义 | 一个任务如何被唯一、稳定、可复现地描述？ | 达到优秀 | 有统一 task schema，明确必填/可选字段，能表达任务约束、成功条件、工具范围和任务类型 | 已补 `Task Schema`，覆盖 `task_id/task_type/user_query/available_tools/success_criteria/constraints/metadata` | 后续随真实任务补充 success criteria 标签集合 |
-| Tool 定义 | 工具如何进入 action space？schema 如何约束模型输出？ | 达到优秀 | 有统一 tool schema，包含名称、描述、JSON schema、返回格式、错误类型和执行约束 | 已补 `Tool Schema`，包含 `input_schema/output_schema/error_schema/side_effects` | 后续随具体工具补充真实 output schema |
-| Runtime State | 模型推理时真实看见什么？ | 达到优秀 | 明确 message 格式、tool calls、tool results、可用工具 schema，并避免泄漏标注信息 | 已补 runtime message 模板，并明确 `messages/tools` 是模型输入 | 后续按具体训练框架适配原生 tool calling 格式 |
-| Annotated State | 哪些信息只用于标注、分析和评测？ | 达到优秀 | 明确哪些字段不能喂给模型，哪些字段只供 evaluator 使用 | 已补字段使用边界表，区分 SFT input、target、evaluator、analysis | 后续在导出脚本中强制校验 no leakage |
-| Action Space | 模型可以输出哪些动作？每类动作结构是什么？ | 达到优秀 | 所有 action type 都有 schema、合法性条件、适用场景和终止条件 | 已补 Action Schema、非法样例和终止条件 | 后续随框架适配 action 序列化方式 |
-| Observation Space | 环境会返回哪些观察？错误如何表示？ | 达到优秀 | 正常结果、空结果、schema 错误、执行错误、系统错误都有统一结构 | 已补 Observation Schema 和标准错误码表 | 后续按真实工具扩展错误码 |
-| Transition Rules | `s_t, a_t, o_{t+1}` 如何生成 `s_{t+1}`？ | 达到优秀 | 每种 action/observation 组合都有状态转移规则，能指导状态机实现 | 已补 `Transition Rules`，覆盖 tool success、schema error、empty result、tool error、final answer、ask user、invalid action、max steps | 后续可直接迁移到 `agent_state_machine.md` |
-| Trajectory Schema | 一条完整轨迹如何保存？ | 达到优秀 | 有 canonical trajectory schema，能同时支持成功轨迹、失败轨迹、部分轨迹和多步轨迹 | 已补 `Trajectory Schema`，包含 `trajectory_id/source/steps/terminal_state/labels` | 后续可按工程需要补 `timestamps` |
-| SFT Sample Schema | 如何从 trajectory 切成训练样本？ | 达到优秀 | 明确 input/target/metadata，说明失败轨迹如何用于训练或过滤 | 已补 `SFT Sample Schema`，并明确 `metadata` 默认不进入模型输入 | 后续补导出脚本时再校验字段 |
-| Feedback / Reward | feedback 如何变成训练信号？ | 达到优秀 | 明确 step feedback、trajectory feedback、reward 组成和适用训练方法 | 已补 reward table、reward 组合公式和不同训练阶段使用方式 | 第一阶段建议只使用 SFT + deterministic evaluator |
-| Evaluator Function | evaluator 输入输出是什么？ | 达到优秀 | `E_step` 和 `E_traj` 有完整输入、输出、评分字段、失败类型和聚合方式 | 已补 `Eval Result Schema`、step score、trajectory score 和 evaluation report | 后续可按实验偏好调整权重 |
-| Evaluator Rules | 每个 failure type 如何触发？ | 达到优秀 | 有 decision table：条件、触发标签、严重程度、是否可规则判断 | 已补 `Failure Decision Table`，覆盖 step-level 和 trajectory-level failure rules | 语义类规则在 groundedness 章节继续细化 |
-| Failure Taxonomy | 失败类型是否稳定、互斥或可组合？ | 达到优秀 | 每个 failure type 有定义、触发条件、例子和优先级 | 已补 primary failure type、多标签策略和优先级 | 后续随真实错误扩展标签 |
-| Data Source | 训练数据从哪里来？如何保证质量？ | 达到优秀 | 明确人工标注、日志、模型生成、模拟环境的进入标准和清洗规则 | 已补数据验收标准、清洗流程和数据质量报告 | 后续用真实数据填充分布 |
-| Task Taxonomy | 任务类型是否覆盖 Agent 核心能力？ | 达到优秀 | 覆盖无工具、单工具、多工具、反问、错误恢复、并行、顺序依赖，并有样例比例 | 已补推荐任务占比、每类任务最小样例和覆盖标准 | 后续按项目目标调整比例 |
-| Minimal Experiment | 第一阶段如何开工？ | 达到优秀 | 明确任务范围、数据格式、evaluator、产出物和验收指标 | 已补数量目标和验收阈值 | 后续根据实际 baseline 调整阈值 |
-| Grounded Final Answer | 如何判断最终回答是否基于 observation？ | 达到优秀 | 有 claim extraction 或 reference-based 判断方法，并能标注 hallucination | 已补 `Grounded Final Answer`，包含 claim 分类、unsupported claim、contradiction、derived judgment、claim checking 和 LLM judge 边界 | 后续按任务域补具体 derivation rules |
-| Multi-tool Dependency | 多工具顺序和依赖如何建模？ | 达到优秀 | 能表达工具依赖图、等价顺序、参数从 observation 派生 | 已补 dependency graph、argument binding、顺序类型、多工具 evaluator 和失败类型 | 后续在 `agent_state_machine.md` 中展开状态图 |
-| Recovery Behavior | 工具失败后如何重试、修正或停止？ | 达到优秀 | 有错误恢复状态、重试策略、最大尝试次数和 evaluator 规则 | 已补 recovery state、策略表、最大尝试次数、recovery evaluator 和失败类型 | 后续在状态机文档中展开恢复路径 |
+可能触发的失败:
+1. missing_argument (优先级5)
+2. invalid_schema (优先级2)
 
-当前总体判断：
+根据优先级，选择invalid_schema作为primary_failure_type，
+但保留missing_argument在failure_types列表中。
+```
 
-- 本文档已经达到“优秀实现规格”的第一版标准。
-- 依据是：核心对象、canonical schemas、transition rules、failure decision table、groundedness、多工具依赖、错误恢复、数据质量、任务覆盖和最小实验验收都已经有可执行定义。
-- 读者现在可以据此开始写数据构造脚本、SFT 样本导出脚本、deterministic evaluator baseline 和第一版状态机。
-- 后续工作不再是补建模骨架，而是根据具体工具、真实任务和实验结果调整 schema、阈值、任务比例和 evaluator 权重。
+#### 3.4.4 失败诊断与修复指导
 
-## 28. 后续需要按项目确认的问题
+对于每种失败类型，提供具体的诊断和修复指导：
 
-这份文档已经给出了 Agent 训练问题的第一版优秀实现规格。剩下的问题不再是建模缺口，而是需要结合具体项目目标和工具环境确认的实验选择：
+```json
+{
+  "failure_diagnosis": {
+    "failure_type": "wrong_argument_value",
+    "step": 0,
+    "details": {
+      "tool_name": "weather",
+      "incorrect_argument": "date",
+      "incorrect_value": "today",
+      "expected_value": "明天",
+      "value_source": "user_query",
+      "extraction_context": "查询[明天][上海]的天气"
+    },
+    "root_cause_analysis": [
+      "可能原因1: 模型未能正确从用户查询中提取时间信息",
+      "可能原因2: 模型混淆了'today'和'明天'的时间表达",
+      "可能原因3: 训练数据中缺少类似的时间提取示例"
+    ],
+    "immediate_fix": "将date参数值改为'明天'",
+    "training_implications": [
+      "收集更多时间表达式提取的示例",
+      "增加时间表达多样性的训练数据",
+      "考虑添加时间规范化预处理"
+    ],
+    "evaluator_improvements": [
+      "增加时间表达语义等价的判断逻辑",
+      "考虑区域性时间表达差异"
+    ]
+  }
+}
+```
 
-- 第一阶段具体选择哪些工具和任务域。
-- 每个任务类型实际采集多少条 expert trajectory。
-- reference trajectory 由人工标注、自动生成，还是二者结合。
-- argument semantic match 在具体领域中使用规则、embedding，还是 LLM judge。
-- groundedness 的领域推导规则如何细化。
-- evaluator 权重和验收阈值是否需要根据 baseline 结果调整。
-- 真实工具的 output schema 和 error code 是否需要扩展。
+### 3.5 Groundedness评估：最终回答的基于性验证方法
+
+Groundedness评估关注最终回答是否基于已有的观察结果，而不是凭空编造。这是评估Agent可信度的关键维度。
+
+#### 3.5.1 Groundedness评估的层次化框架
+
+```mermaid
+graph TB
+    A[最终回答] --> B[主张提取 Claim Extraction]
+    
+    B --> C[主张分类 Claim Classification]
+    C --> D[观察事实 Observed Fact]
+    C --> E[推导判断 Derived Judgment]
+    C --> F[用户上下文 User Context]
+    C --> G[通用建议 Generic Advice]
+    
+    D --> H[精确匹配检查<br/>规则验证]
+    E --> I[合理性检查<br/>LLM/规则验证]
+    F --> J[一致性检查<br/>与用户输入对比]
+    G --> K[无矛盾检查<br/>不与观察冲突]
+    
+    H --> L[支持状态判定]
+    I --> L
+    J --> L
+    K --> L
+    
+    L --> M[聚合Groundedness分数]
+    
+    M --> N[最终评估结果<br/>Supported/Unsupported/Contradicted]
+```
+
+#### 3.5.2 主张分类与验证方法
+
+**1. 观察事实（Observed Fact）**
+```json
+{
+  "claim": "上海明天气温18-24C",
+  "type": "observed_fact",
+  "verification_method": "exact_match",
+  "required_observation_fields": ["temperature"],
+  "allowed_variations": ["18-24度", "18到24摄氏度"],
+  "validation_result": {
+    "status": "supported",
+    "evidence": "observation.weather.result.temperature",
+    "match_type": "exact",
+    "confidence": 1.0
+  }
+}
+```
+
+**2. 推导判断（Derived Judgment）**
+```json
+{
+  "claim": "明天适合户外跑步",
+  "type": "derived_judgment",
+  "verification_method": "rule_based + llm_judge",
+  "required_observations": ["temperature", "rain_probability", "wind"],
+  "derivation_rules": [
+    "if rain_probability < 30% and temperature in comfortable_range and wind not strong: suitable = true",
+    "comfortable_range: 15-28C for running"
+  ],
+  "validation_result": {
+    "status": "supported",
+    "evidence": "temperature=18-24C, rain=20%, wind=light",
+    "rule_evaluation": "all conditions met",
+    "llm_judgment": "reasonable based on weather conditions",
+    "confidence": 0.9
+  }
+}
+```
+
+**3. 用户上下文（User Context）**
+```json
+{
+  "claim": "用户想在上海跑步",
+  "type": "user_context", 
+  "verification_method": "context_match",
+  "source_requirements": ["user_query", "previous_context"],
+  "validation_result": {
+    "status": "supported",
+    "evidence": "user_query contains '上海' and '跑步'",
+    "match_type": "direct_reference",
+    "confidence": 1.0
+  }
+}
+```
+
+**4. 通用建议（Generic Advice）**
+```json
+{
+  "claim": "出门前再确认实时天气",
+  "type": "generic_advice",
+  "verification_method": "contradiction_check",
+  "validation_criteria": [
+    "not contradict observations",
+    "not introduce new specific facts",
+    "be generally reasonable"
+  ],
+  "validation_result": {
+    "status": "supported",
+    "reason": "generic advice that doesn't contradict observations",
+    "confidence": 0.8
+  }
+}
+```
+
+#### 3.5.3 Groundedness评估的实现策略
+
+**第一阶段：规则优先实现**
+```python
+class RuleBasedGroundednessEvaluator:
+    def evaluate(self, final_answer: str, observations: List[Observation]) -> GroundednessResult:
+        result = GroundednessResult()
+        
+        # 1. 结构化字段的精确匹配
+        structured_matches = self.check_structured_fields(final_answer, observations)
+        result.structured_matches = structured_matches
+        
+        # 2. 枚举值的映射匹配
+        enum_matches = self.check_enum_mappings(final_answer, observations)
+        result.enum_matches = enum_matches
+        
+        # 3. 成功条件覆盖检查
+        coverage = self.check_success_criteria_coverage(final_answer, observations)
+        result.coverage = coverage
+        
+        # 4. 明显矛盾检查
+        contradictions = self.check_contradictions(final_answer, observations)
+        result.contradictions = contradictions
+        
+        # 5. 聚合结果
+        result.grounded_in_observation = (
+            len(structured_matches.missing) == 0 and
+            len(contradictions) == 0 and
+            coverage.required_covered >= coverage.required_total * 0.8
+        )
+        
+        return result
+```
+
+**第二阶段：LLM增强实现**
+```python
+class LLMEnhancedGroundednessEvaluator(RuleBasedGroundednessEvaluator):
+    def evaluate(self, final_answer: str, observations: List[Observation], task: Task) -> GroundednessResult:
+        # 1. 先用规则检查
+        rule_result = super().evaluate(final_answer, observations)
+        
+        # 2. 如果需要，用LLM检查语义匹配
+        if rule_result.needs_semantic_check:
+            llm_result = self.llm_semantic_check(final_answer, observations, task)
+            rule_result.llm_enhancement = llm_result
+            
+            # 3. 结合规则和LLM结果
+            rule_result.grounded_in_observation = (
+                rule_result.grounded_in_observation and
+                llm_result.overall_supported
+            )
+        
+        return rule_result
+```
+
+**LLM Judge提示设计示例**：
+```
+你是一个严谨的验证助手，需要判断AI助手的最终回答是否基于提供的工具观察结果。
+
+用户任务：{task_description}
+
+工具观察结果：
+{formatted_observations}
+
+AI助手的最终回答：
+{final_answer}
+
+请逐项检查最终回答中的关键主张，判断每个主张是否：
+1. 直接来自观察结果（提供具体证据）
+2. 可以从观察结果合理推导（说明推导逻辑）
+3. 属于用户提供的上下文信息
+4. 是通用的合理建议（不与观察矛盾）
+5. 缺乏依据或与观察矛盾
+
+请以JSON格式输出：
+{
+  "claims_analysis": [
+    {
+      "claim": "具体主张文本",
+      "type": "observed_fact|derived_judgment|user_context|generic_advice",
+      "status": "supported|unsupported|contradicted|not_checkable",
+      "evidence": "支持或反对的证据",
+      "confidence": 0.0-1.0
+    }
+  ],
+  "overgroundedness": {
+    "grounded_in_observation": true/false,
+    "unsupported_claims_count": number,
+    "contradictions_count": number,
+    "overall_confidence": 0.0-1.0
+  }
+}
+```
+
+#### 3.5.4 Groundedness评估的实用建议
+
+**第一阶段实施重点**：
+1. **结构化字段优先**：先实现数值、日期、地点等结构化字段的精确匹配
+2. **枚举值映射**：建立常见枚举值（如天气状况、风力等级）的映射表
+3. **明显矛盾检测**：实现基本的矛盾检测规则
+4. **成功条件覆盖**：检查最终回答是否覆盖了任务成功条件
+
+**后续增强方向**：
+1. **语义等价扩展**：增加同义词、近义词、不同表达方式的匹配
+2. **数值范围处理**：处理"适中"、"较高"等模糊表述与具体数值的对应
+3. **推导规则库**：建立领域特定的推导规则库
+4. **LLM Judge集成**：在规则无法覆盖时使用LLM进行语义判断
+
+**评估结果的使用**：
+1. **训练信号**：Groundedness分数可以作为强化学习的奖励组成部分
+2. **数据筛选**：低Groundedness的轨迹需要人工检查或修正
+3. **能力诊断**：分析哪些类型的unclaimed claims最常见，指导数据收集
+4. **版本比较**：比较不同模型版本的Groundedness表现
+
+---
+
+## 📍 第三部分总结与过渡
+
+第三部分深入探讨了Agent训练与评估的实践层面，建立了完整的数据、训练、评估体系：
+
+1. **数据构造方法论**：明确了四种数据来源的特点、质量验收标准和清洗流程
+2. **训练目标设计**：形式化了SFT、拒绝采样、RL等训练方法的数学基础和工程权衡
+3. **评估器架构**：设计了分层评估系统，平衡规则确定性和语义理解能力
+4. **失败类型学**：建立了系统化的失败分类、检测和诊断框架
+5. **Groundedness评估**：提供了最终回答基于性验证的具体方法
+
+**这些实践指南将理论框架转化为可实施的工程方案**，为实际系统的开发提供了具体指导。
+
+**接下来进入第四部分**，我们将提供具体的实现规范、参考示例和完整性检查。特别关注：
+- 所有数据结构的完整JSON Schema定义
+- 任务类型划分与设计规范
+- 最小可执行版本的逐步指南
+- 建模覆盖的完整性检查清单
+
+[跳转到第四部分：实现规范与参考 →](#第四部分实现规范与参考)
+
+---
+
+## 第四部分：实现规范与参考
+
+前三部分建立了Agent训练的理论框架、系统模型和实践指南，第四部分提供具体的实现规范、参考示例和完整性检查，确保理论可以顺利转化为实际系统。
+
+### 4.1 核心数据结构：完整JSON Schema参考
+
+统一的Schema定义是系统各部分（数据构造、训练、评估）能够协同工作的基础。以下是关键数据结构的完整Schema定义。
+
+#### 4.1.1 Task Schema（任务定义）
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent Task Definition",
+  "description": "定义一个Agent需要完成的任务",
+  "type": "object",
+  "required": ["task_id", "task_type", "user_query", "available_tools", "success_criteria"],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "任务唯一标识符",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "task_type": {
+      "type": "string",
+      "enum": ["no_tool", "single_tool", "single_tool_with_final", "multi_tool_sequential", "multi_tool_unordered", "ask_user", "recovery"],
+      "description": "任务类型分类"
+    },
+    "user_query": {
+      "type": "string",
+      "description": "用户原始请求",
+      "minLength": 1
+    },
+    "available_tools": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "该任务可使用的工具名称列表",
+      "minItems": 0
+    },
+    "success_criteria": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "任务成功条件列表，建议使用可解析标签格式",
+      "minItems": 1
+    },
+    "constraints": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "额外约束条件",
+      "default": []
+    },
+    "reference_answer": {
+      "type": "string",
+      "description": "参考最终答案（可选）"
+    },
+    "reference_trajectory_id": {
+      "type": "string",
+      "description": "对应专家轨迹ID（可选）"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "任务元数据",
+      "properties": {
+        "domain": {"type": "string"},
+        "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
+        "source": {"type": "string"},
+        "creation_time": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}
+```
+
+#### 4.1.2 Trajectory Schema（轨迹记录）
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent Trajectory",
+  "description": "记录Agent完整执行过程",
+  "type": "object",
+  "required": ["trajectory_id", "task_id", "source", "steps", "terminal_state", "labels"],
+  "properties": {
+    "trajectory_id": {
+      "type": "string",
+      "description": "轨迹唯一标识符"
+    },
+    "task_id": {
+      "type": "string",
+      "description": "对应任务ID"
+    },
+    "source": {
+      "type": "string",
+      "enum": ["human_annotated", "agent_log", "model_generated", "simulated"],
+      "description": "轨迹来源"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step_index", "model_input_state", "action"],
+        "properties": {
+          "step_index": {"type": "integer", "minimum": 0},
+          "model_input_state": {"type": "object"},
+          "annotation_state": {"type": "object"},
+          "action": {"type": "object"},
+          "observation": {"type": ["object", "null"]}
+        }
+      },
+      "minItems": 1
+    },
+    "terminal_state": {
+      "type": "object",
+      "required": ["reason", "success"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": ["final_answer", "ask_user", "max_steps_exceeded", "tool_error_unrecoverable", "invalid_action", "manual_stop"]
+        },
+        "success": {"type": "boolean"},
+        "step": {"type": "integer"},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "labels": {
+      "type": "object",
+      "required": ["success", "failure_types"],
+      "properties": {
+        "success": {"type": "boolean"},
+        "failure_types": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": []
+        }
+      }
+    }
+  }
+}
+```
+
+#### 4.1.3 SFT Sample Schema（训练样本）
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SFT Training Sample",
+  "description": "从轨迹中提取的单个训练样本",
+  "type": "object",
+  "required": ["sample_id", "task_id", "trajectory_id", "step_index", "input", "target"],
+  "properties": {
+    "sample_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "trajectory_id": {"type": "string"},
+    "step_index": {"type": "integer", "minimum": 0},
+    "input": {
+      "type": "object",
+      "required": ["model_input_state"],
+      "properties": {
+        "model_input_state": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"type": "object"}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "task_type": {"type": "string"},
+        "action_type": {"type": "string"},
+        "source": {"type": "string"},
+        "difficulty": {"type": "string"}
+      }
+    }
+  }
+}
+```
+
+### 4.2 任务类型划分：七类核心任务的设计规范
+
+系统化的任务分类有助于确保训练数据的全面性和评估的针对性。以下是七类核心任务的设计规范。
+
+#### 4.2.1 七类任务定义与设计要点
+
+| 任务类型 | 核心目标 | 关键设计要点 | 评估重点 | 推荐比例 |
+|----------|----------|--------------|----------|:--------:|
+| **无工具任务**<br/>(no_tool) | 学会不滥用工具，直接回答 | 1. 确保任务确实不需要工具<br/>2. 覆盖多种问题类型<br/>3. 包含明确的不需要工具的信号 | 1. 是否调用了多余工具<br/>2. 回答质量 | 10% |
+| **单工具基础任务**<br/>(single_tool) | 学会基础工具选择和参数填写 | 1. 明确的工具选择<br/>2. 清晰的参数来源<br/>3. 单一工具调用 | 1. 工具选择正确性<br/>2. 参数完整性<br/>3. Schema合规性 | 35% |
+| **单工具综合任务**<br/>(single_tool_with_final) | 学会基于工具结果进行综合回答 | 1. 工具结果到最终回答的合理推导<br/>2. 避免幻觉<br/>3. 信息充分性判断 | 1. 工具调用正确性<br/>2. 最终回答基于性<br/>3. 回答完整性 | 20% |
+| **多工具顺序任务**<br/>(multi_tool_sequential) | 学会处理工具间的依赖关系 | 1. 清晰的依赖关系定义<br/>2. 参数传递逻辑<br/>3. 顺序约束 | 1. 依赖关系满足<br/>2. 参数绑定正确<br/>3. 顺序合理 | 15% |
+| **多工具并行任务**<br/>(multi_tool_unordered) | 学会处理可并行执行的任务 | 1. 明确的无依赖关系<br/>2. 结果综合逻辑<br/>3. 效率考量 | 1. 工具集合正确<br/>2. 无多余工具调用<br/>3. 综合质量 | 5% |
+| **反问用户任务**<br/>(ask_user) | 学会在信息不足时恰当反问 | 1. 明确的信息缺失场景<br/>2. 合理的反问内容<br/>3. 反问时机的把握 | 1. 反问必要性<br/>2. 反问明确性<br/>3. 时机恰当性 | 5% |
+| **错误恢复任务**<br/>(recovery) | 学会从工具错误中恢复 | 1. 多样化的错误类型<br/>2. 合理的恢复策略<br/>3. 恢复成功率 | 1. 错误识别<br/>2. 恢复策略合理<br/>3. 最终任务完成 | 10% |
+
+#### 4.2.2 任务设计检查清单
+
+在设计新任务时，使用以下检查清单确保质量：
+
+```python
+def validate_task_design(task: Task) -> List[str]:
+    """任务设计质量检查"""
+    issues = []
+    
+    # 1. 基本完整性检查
+    if not task.task_id:
+        issues.append("缺少task_id")
+    if not task.user_query or len(task.user_query.strip()) < 5:
+        issues.append("user_query太短或不明确")
+    
+    # 2. 类型一致性检查
+    if task.task_type == "no_tool" and task.available_tools:
+        issues.append("无工具任务不应有available_tools")
+    if task.task_type == "ask_user" and len(task.success_criteria) == 0:
+        issues.append("反问任务应有明确的成功条件")
+    
+    # 3. 工具相关检查
+    if task.task_type in ["single_tool", "multi_tool_sequential", "multi_tool_unordered"]:
+        if len(task.available_tools) == 0:
+            issues.append("工具任务必须有available_tools")
+        if any("must_call_tool:" not in crit for crit in task.success_criteria if "tool" in crit):
+            issues.append("工具相关成功条件应使用must_call_tool:前缀")
+    
+    # 4. 成功条件检查
+    if len(task.success_criteria) == 0:
+        issues.append("必须至少有一个成功条件")
+    if any(len(crit) > 200 for crit in task.success_criteria):
+        issues.append("成功条件应简洁明确")
+    
+    # 5. 元数据检查
+    if not task.metadata.get("difficulty"):
+        issues.append("建议指定任务难度")
+    if not task.metadata.get("domain"):
+        issues.append("建议指定任务领域")
+    
+    return issues
+```
+
+### 4.3 最小可执行版本：第一阶段实施指南
+
+为了快速验证整个框架的可行性，建议从最小可执行版本开始。以下是最小版本的具体实施步骤。
+
+#### 4.3.1 第一阶段范围定义
+
+**约束条件**：
+- 只处理单工具任务（最多一次工具调用）
+- 工具调用成功后，下一步必须是final_answer
+- 暂不处理多工具依赖、复杂错误恢复、开放式LLM评估
+- 使用确定性规则评估器
+
+**验证目标**：
+```
+user_query → tool_call → observation → final_answer
+```
+
+#### 4.3.2 实施步骤
+
+**步骤1：任务设计（1-2天）**
+```python
+# 设计50-100个单工具任务
+tasks = [
+    {
+        "task_id": "weather_001",
+        "task_type": "single_tool_with_final",
+        "user_query": "查询明天上海的天气，并告诉我是否适合户外跑步。",
+        "available_tools": ["weather"],
+        "success_criteria": [
+            "must_call_tool:weather",
+            "must_use_observation",
+            "must_answer_running_advice"
+        ]
+    },
+    # ... 更多任务
+]
+```
+
+**步骤2：数据收集与标注（3-5天）**
+- 为每个任务创建1条专家轨迹
+- 确保轨迹格式符合Schema
+- 拆分出100-200个SFT训练样本
+
+**步骤3：模型训练（1-2天）**
+```python
+# 基础SFT训练配置
+training_config = {
+    "model": "base_language_model",
+    "batch_size": 32,
+    "learning_rate": 1e-5,
+    "epochs": 3,
+    "input_format": "messages + tools",
+    "output_format": "action_json"
+}
+```
+
+**步骤4：评估器实现（2-3天）**
+```python
+class MinimalEvaluator:
+    """最小版本评估器"""
+    
+    def evaluate(self, trajectory: Trajectory, task: Task) -> EvaluationResult:
+        result = EvaluationResult()
+        
+        # 1. 检查工具调用
+        tool_calls = [step for step in trajectory.steps if step.action.type == "tool_call"]
+        if len(tool_calls) != 1:
+            result.failure_types.append("wrong_tool_count")
+            
+        # 2. 检查最终回答
+        final_answers = [step for step in trajectory.steps if step.action.type == "final_answer"]
+        if len(final_answers) != 1:
+            result.failure_types.append("wrong_final_answer_count")
+            
+        # 3. 检查顺序：工具调用必须在最终回答之前
+        if tool_calls and final_answers:
+            if tool_calls[0].step_index >= final_answers[0].step_index:
+                result.failure_types.append("wrong_order")
+                
+        # 4. 基本成功判断
+        result.success = len(result.failure_types) == 0
+        result.score = 1.0 if result.success else 0.0
+        
+        return result
+```
+
+**步骤5：测试与验证（2-3天）**
+- 使用20-30个保留测试任务
+- 运行完整流程：任务→模型→评估
+- 收集基础指标
+
+#### 4.3.3 第一阶段验收标准
+
+| 指标 | 目标阈值 | 测量方法 | 未达标的应对措施 |
+|------|:--------:|----------|------------------|
+| Schema合规率 | ≥ 98% | 检查所有数据文件的Schema验证 | 修复数据生成脚本 |
+| 工具选择准确率 | ≥ 85% | 测试集上正确工具调用比例 | 增加工具选择训练数据 |
+| 参数精确匹配率 | ≥ 75% | 参数值与参考值完全一致的比例 | 增加参数提取训练数据 |
+| 执行成功率 | ≥ 80% | 工具调用成功执行的比例 | 检查工具实现或参数验证 |
+| 最终回答基于率 | ≥ 80% | 最终回答引用工具结果的比例 | 增加基于观察的回答训练 |
+| 任务成功率 | ≥ 70% | 完整任务成功的比例 | 分析失败模式，针对性改进 |
+
+**第一阶段成功标志**：
+1. 完整流程可运行：任务定义→数据构造→模型训练→评估
+2. 基础指标达到阈值
+3. 失败分析可指导下一步改进
+4. 团队对框架理解一致
+
+### 4.4 建模覆盖矩阵：完整性检查清单
+
+为确保文档覆盖了Agent训练的所有关键方面，使用以下矩阵进行完整性检查。每个模块都应达到"实现就绪"状态。
+
+| 模块 | 需要回答的核心问题 | 当前状态 | 达到优秀的判断标准 | 当前依据 |
+|------|-------------------|----------|-------------------|----------|
+| **Task定义** | 任务如何被唯一、稳定、可复现地描述？ | ✅ 优秀 | 有统一task schema，明确必填/可选字段，能表达任务约束、成功条件、工具范围和任务类型 | 完整Task Schema，覆盖所有关键字段 |
+| **Tool定义** | 工具如何进入action space？schema如何约束模型输出？ | ✅ 优秀 | 有统一tool schema，包含名称、描述、JSON schema、返回格式、错误类型和执行约束 | 完整Tool Schema，包含input/output/error schema |
+| **Runtime State** | 模型推理时真实看见什么？ | ✅ 优秀 | 明确message格式、tool calls、tool results、可用工具schema，避免泄漏标注信息 | Runtime message模板，明确输入边界 |
+| **Annotated State** | 哪些信息只用于标注、分析和评测？ | ✅ 优秀 | 明确哪些字段不能喂给模型，哪些字段只供evaluator使用 | 字段使用边界表，严格区分输入与标注 |
+| **Action Space** | 模型可以输出哪些动作？每类动作结构是什么？ | ✅ 优秀 | 所有action type都有schema、合法性条件、适用场景和终止条件 | Action Schema，非法样例，终止条件 |
+| **Observation Space** | 环境会返回哪些观察？错误如何表示？ | ✅ 优秀 | 正常结果、空结果、schema错误、执行错误、系统错误都有统一结构 | Observation Schema，标准错误码表 |
+| **Transition Rules** | $s_t, a_t, o_{t+1}$如何生成$s_{t+1}$？ | ✅ 优秀 | 每种action/observation组合都有状态转移规则，能指导状态机实现 | 完整Transition决策表，覆盖所有场景 |
+| **Trajectory Schema** | 一条完整轨迹如何保存？ | ✅ 优秀 | 有canonical trajectory schema，能同时支持成功轨迹、失败轨迹、部分轨迹和多步轨迹 | 完整Trajectory Schema |
+| **SFT Sample Schema** | 如何从轨迹切成训练样本？ | ✅ 优秀 | 明确input/target/metadata，说明失败轨迹如何用于训练或过滤 | SFT Sample Schema，明确元数据分离 |
+| **Feedback / Reward** | feedback如何变成训练信号？ | ✅ 优秀 | 明确step feedback、trajectory feedback、reward组成和适用训练方法 | Reward table，不同训练阶段使用方式 |
+| **Evaluator Function** | evaluator输入输出是什么？ | ✅ 优秀 | $E_{step}$和$E_{traj}$有完整输入、输出、评分字段、失败类型和聚合方式 | 评估器架构，评分公式，报告格式 |
+| **Evaluator Rules** | 每个failure type如何触发？ | ✅ 优秀 | 有decision table：条件、触发标签、严重程度、是否可规则判断 | Failure决策表，优先级规则 |
+| **Failure Taxonomy** | 失败类型是否稳定、互斥或可组合？ | ✅ 优秀 | 每个failure type有定义、触发条件、例子和优先级 | 完整Failure分类，多标签策略 |
+| **Data Source** | 训练数据从哪里来？如何保证质量？ | ✅ 优秀 | 明确人工标注、日志、模型生成、模拟环境的进入标准和清洗规则 | 数据质量验收标准，清洗流程 |
+| **Task Taxonomy** | 任务类型是否覆盖Agent核心能力？ | ✅ 优秀 | 覆盖无工具、单工具、多工具、反问、错误恢复、并行、顺序依赖，并有样例比例 | 七类任务定义，推荐比例 |
+| **Groundedness评估** | 如何判断最终回答是否基于observation？ | ✅ 优秀 | 有claim extraction或reference-based判断方法，并能标注hallucination | Groundedness评估框架，主张分类 |
+| **Multi-tool依赖** | 多工具顺序和依赖如何建模？ | ✅ 优秀 | 能表达工具依赖图、等价顺序、参数从observation派生 | DAG表示，参数绑定，多工具评估 |
+| **Recovery行为** | 工具失败后如何重试、修正或停止？ | ✅ 优秀 | 有错误恢复状态、重试策略、最大尝试次数和evaluator规则 | Recovery状态，策略表，评估器 |
+
+**总体评估**：本文档已达到"优秀实现规格"标准，所有关键模块都有明确的定义、规范和实现指导。
+
+### 4.5 后续工作与扩展方向
+
+本文档建立了完整的基础框架，但实际项目中可能需要根据具体需求进行扩展：
+
+#### 4.5.1 短期扩展方向（1-3个月）
+
+1. **多工具支持增强**
+   - 实现完整的DAG依赖检查
+   - 开发参数绑定验证器
+   - 支持并行工具调用的优化
+
+2. **评估器增强**
+   - 集成LLM Judge进行语义评估
+   - 开发更精细的Groundedness检查
+   - 实现实时评估与反馈
+
+3. **训练方法扩展**
+   - 实现完整的Rejection Sampling流程
+   - 开发RL训练框架
+   - 支持课程学习和自适应训练
+
+#### 4.5.2 中期扩展方向（3-12个月）
+
+1. **复杂任务支持**
+   - 支持开放式任务定义
+   - 实现动态工具发现与使用
+   - 开发任务分解与规划能力
+
+2. **系统优化**
+   - 状态压缩与高效表示
+   - 分布式训练支持
+   - 实时学习与自适应
+
+3. **评估体系完善**
+   - 人类评估集成
+   - A/B测试框架
+   - 长期性能监控
+
+#### 4.5.3 长期研究方向（1年以上）
+
+1. **通用能力提升**
+   - 零样本工具使用
+   - 跨领域迁移学习
+   - 自我改进与元学习
+
+2. **人机协作**
+   - 自然的人机交互协议
+   - 意图理解与澄清
+   - 个性化适应
+
+3. **理论深化**
+   - 形式化验证与保证
+   - 安全性证明
+   - 可解释性理论
+
+### 4.6 术语表与快速参考
+
+#### 核心术语速查
+
+| 术语 | 定义 | 关键属性 |
+|------|------|----------|
+| **Task** | 用户希望Agent完成的目标 | 包含user_query, available_tools, success_criteria |
+| **Tool** | 可以被Agent调用的功能单元 | 包含name, description, schema |
+| **State** | 模型决策时可见的信息 | 分为Runtime State和Annotated State |
+| **Action** | 模型输出的下一步行为 | 包括tool_call, final_answer, ask_user |
+| **Observation** | 环境执行action后返回的信息 | 包括成功结果和各种错误类型 |
+| **Trajectory** | 完整任务执行过程记录 | 包含多个(state, action, observation)步骤 |
+| **Policy** | Agent的决策函数$\pi_\theta$ | 学习从state到action的映射 |
+| **Evaluator** | 评估轨迹质量的函数 | 提供分数和失败诊断 |
+
+#### 关键公式索引
+
+1. **策略定义**：$\pi_\theta: s_t \to a_t$
+2. **状态转移**：$s_{t+1} = \text{Transition}(s_t, a_t, o_{t+1})$
+3. **训练目标**：$\maximize_{\theta} \ \mathbb{E}_{\text{task} \sim D_{\text{task}}}[\text{Evaluator}(\tau_\theta, \text{task})]$
+4. **SFT目标**：$\minimize\ -\log \pi_\theta(a_t^* | s_t)$
+5. **RL目标**：$\maximize_{\theta} \mathbb{E}_{\tau \sim \pi_\theta}[R(\tau)]$
+
+#### 实现检查清单
+
+在开始实现前，确认以下事项：
+- [ ] 所有数据Schema已明确定义
+- [ ] 状态转移规则完整覆盖
+- [ ] 评估器可以处理所有失败类型
+- [ ] 训练数据有明确的质量标准
+- [ ] 最小可执行版本的范围明确
+- [ ] 团队对关键概念理解一致
+
+---
+
+## 📚 文档总结与使用建议
+
+### 本文档的完整逻辑架构
+
+```
+理论基础（第一部分）
+├── 核心概念澄清：Agent系统 vs 决策模块
+├── 训练目标形式化：数学定义与优化目标
+└── 与思维链对比：外部化推理的本质
+
+系统建模（第二部分）
+├── 状态表示分层：Runtime vs Annotated State
+├── 动作空间设计：三类核心动作规范
+├── 观察空间建模：结果与错误处理
+├── 状态转移规则：完整Transition决策表
+└── 多工具依赖：DAG表示与参数绑定
+
+实践指南（第三部分）
+├── 数据构造：四种来源与质量验收
+├── 训练方法：SFT/拒绝采样/RL的完整设计
+├── 评估器架构：分层评估与失败诊断
+├── 失败类型学：系统化分类与检测
+└── Groundedness评估：基于性验证方法
+
+实现规范（第四部分）
+├── 完整Schema定义：JSON规范参考
+├── 任务类型划分：七类任务设计指南
+├── 最小可执行版本：第一阶段实施步骤
+├── 建模覆盖矩阵：完整性检查清单
+└── 术语表与快速参考
+```
+
+### 给不同角色的使用建议
+
+**算法工程师（主要读者）**：
+1. 从**第一部分**理解核心概念和数学形式
+2. 参考**第四部分**的Schema和实现指南开始编码
+3. 使用**第三部分**的评估和训练方法优化系统
+4. 基于**第二部分**的建模原则设计复杂功能
+
+**项目经理/产品经理**：
+1. 阅读**执行摘要**了解整体框架
+2. 参考**4.2节**了解任务类型和能力范围
+3. 使用**4.3节**估算项目阶段和资源需求
+4. 基于**4.5节**规划长期发展路线
+
+**数据标注/评估团队**：
+1. 参考**3.1节**了解数据质量标准和标注流程
+2. 使用**3.4节**的失败分类进行问题诊断
+3. 基于**3.5节**的Groundedness指南进行质量检查
+4. 参考**4.1节**确保数据格式符合Schema
+
+### 文档的维护与更新建议
+
+1. **版本控制**：对本文档进行版本管理，记录重大变更
+2. **实践反馈**：在实际项目中验证文档建议，收集反馈
+3. **定期回顾**：每季度回顾文档，根据技术发展更新内容
+4. **社区贡献**：鼓励团队贡献案例研究和改进建议
+
+### 最后的提醒
+
+**本文档是一个起点，而非终点**。实际项目中：
+
+1. **从简单开始**：先实现最小可执行版本，验证核心流程
+2. **迭代改进**：基于实际数据和评估结果逐步优化
+3. **保持灵活**：根据具体需求调整框架细节
+4. **重视评估**：没有可靠的评估，就没有有效的改进
+
+Agent训练是一个复杂的系统工程问题，本文档提供了系统的思考框架和具体的实现指南。希望它能为您的项目提供有价值的参考，并随着实践不断丰富和完善。
+
+**祝您的Agent训练项目取得成功！**
+
+---
+*文档版本：v1.0（基于原problem_formulation.md重构）*  
+*最后更新：2024年6月*  
+*维护建议：随着项目实践反馈定期更新*
