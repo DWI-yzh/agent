@@ -1,4 +1,5 @@
 {
+    "markdownlint.run": "onSave",
     "python-envs.pythonProjects": [
         {
             "path": "data",
