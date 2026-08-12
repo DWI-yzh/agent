@@ -1,0 +1,55 @@
+{
+  "seed": 42,
+  "count_per_group": 10,
+  "give_answer_count_per_group": 5,
+  "source": {
+    "trajectory_dataset": "tuandunghcmut/toolbench-v1",
+    "trajectory_split": "validation",
+    "g2_query_index": "Tool-COLT/ToolBenchG2",
+    "g3_query_index": "Tool-COLT/ToolBenchG3",
+    "urls": {
+      "trajectory_parquet": "https://huggingface.co/datasets/tuandunghcmut/toolbench-v1/resolve/main/data/validation-00000-of-00001.parquet?download=true",
+      "g2_query_index": "https://huggingface.co/datasets/Tool-COLT/ToolBenchG2/resolve/main/queries.jsonl?download=true",
+      "g3_query_index": "https://huggingface.co/datasets/Tool-COLT/ToolBenchG3/resolve/main/queries.jsonl?download=true"
+    }
+  },
+  "diagnostics": {
+    "eligible_g1": 100,
+    "eligible_g2": 99,
+    "eligible_g3": 95,
+    "intermediate_prefix_skipped": 462,
+    "unknown_group_skipped": 6
+  },
+  "outputs": {
+    "G1": {
+      "path": "D:\\work\\agent-lab\\repos\\ToolBench\\data_analysis\\data_samples\\g1_10.jsonl",
+      "records": 10,
+      "unique_queries": 10,
+      "outcomes": {
+        "give_answer": 5,
+        "give_up_and_restart": 5
+      },
+      "sha256": "e61b210c5a15ffe571962654c5c7f03a525ada487629ddb33c34213331b7b0b6"
+    },
+    "G2": {
+      "path": "D:\\work\\agent-lab\\repos\\ToolBench\\data_analysis\\data_samples\\g2_10.jsonl",
+      "records": 10,
+      "unique_queries": 10,
+      "outcomes": {
+        "give_answer": 5,
+        "give_up_and_restart": 5
+      },
+      "sha256": "71d438f119918508a0282bd03ba6e4e7090da753264423b529f42ad3116a8415"
+    },
+    "G3": {
+      "path": "D:\\work\\agent-lab\\repos\\ToolBench\\data_analysis\\data_samples\\g3_10.jsonl",
+      "records": 10,
+      "unique_queries": 10,
+      "outcomes": {
+        "give_answer": 5,
+        "give_up_and_restart": 5
+      },
+      "sha256": "174628c3cb28e03d099ccccd5b71a20c547d8a37b81edbdb20c59b322c830850"
+    }
+  }
+}

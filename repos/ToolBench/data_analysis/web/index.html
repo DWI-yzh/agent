@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>ToolBench 数据分析工作台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">TB</span>
+        <span><strong id="page-title">轨迹分析工作台</strong><small id="page-subtitle">任务 2.3.2 · 引导式标注</small></span>
+      </div>
+      <div class="top-actions">
+        <span id="save-state" class="save-state">● 已加载</span>
+        <button id="switch-page" class="button" type="button">进入 SAO 转换</button>
+        <button id="export-button" class="button button-primary" type="button">导出标注 JSONL</button>
+      </div>
+    </header>
+
+    <div id="loading" class="loading">正在读取 ToolBench 样本……</div>
+    <div id="error-banner" class="error-banner hidden" role="alert"></div>
+
+    <section id="trajectory-page" class="page hidden" aria-label="任务 2.3.2 轨迹分析">
+      <aside class="sample-sidebar">
+        <div class="sidebar-head">
+          <h2>样本列表</h2>
+          <div class="group-filter" aria-label="数据分组">
+            <button type="button" data-group="G1">G1</button>
+            <button type="button" data-group="G2" aria-pressed="true">G2</button>
+            <button type="button" data-group="G3">G3</button>
+          </div>
+        </div>
+        <div id="sample-list" class="sample-list"></div>
+      </aside>
+
+      <main class="trajectory-workspace">
+        <section class="task-context">
+          <div>
+            <span id="trajectory-sample-kicker" class="kicker"></span>
+            <h1 id="trajectory-query"></h1>
+            <div id="trajectory-tools" class="tag-row"></div>
+          </div>
+          <button id="auto-overview" class="button" type="button">生成概览草稿</button>
+        </section>
+
+        <nav class="level-tabs" role="tablist" aria-label="分析层级">
+          <button type="button" data-analysis-tab="overview" role="tab">样本概览</button>
+          <button type="button" data-analysis-tab="step" role="tab" aria-selected="true">当前 Step</button>
+        </nav>
+
+        <section id="trajectory-step-view" class="trajectory-main-grid">
+          <aside class="step-sidebar">
+            <div class="panel-head"><h2>完整线性轨迹</h2><small>Action 与 Observation 成对显示</small></div>
+            <div id="trajectory-step-list" class="step-list"></div>
+          </aside>
+
+          <section class="step-analysis">
+            <div class="extract-grid">
+              <article class="extract-box"><span>Action · 自动提取</span><pre id="raw-action"></pre></article>
+              <article class="extract-box"><span>Observation · 自动关联</span><pre id="raw-observation"></pre></article>
+            </div>
+
+            <form id="trajectory-step-form" class="guided-form">
+              <section class="form-block">
+                <header><h2><b>1</b>这一步为什么调用它？</h2><small>只写一句话</small></header>
+                <label>Action 目的<textarea name="action_purpose" required></textarea></label>
+              </section>
+
+              <section class="form-block">
+                <header><h2><b>2</b>每个参数来自哪里？</h2><small>逐参数确认</small></header>
+                <div id="argument-source-table" class="argument-table"></div>
+              </section>
+
+              <section class="form-block">
+                <header><h2><b>3</b>Observation 说明了什么？</h2><small>先分类，再补一句</small></header>
+                <div id="observation-status-buttons" class="choice-row"></div>
+                <label>一句话解释<textarea name="observation_summary" required></textarea></label>
+              </section>
+
+              <section class="form-block">
+                <header><h2><b>4</b>下一步实际做了什么，应该做什么？</h2></header>
+                <div class="next-action-grid">
+                  <article><span>实际下一步 · 自动提取</span><p id="actual-next-action"></p></article>
+                  <label>你认为应该做的下一步<textarea name="expected_next_action"></textarea></label>
+                </div>
+              </section>
+
+              <section class="form-block">
+                <header><h2><b>5</b>给当前 Step 下结论</h2><small>选择即可</small></header>
+                <div id="step-judgement-buttons" class="choice-row"></div>
+                <div class="two-fields">
+                  <label>错误类型<select name="failure_type"></select></label>
+                  <label>是否可恢复<select name="recoverable"><option value="true">是</option><option value="false">否</option></select></label>
+                </div>
+              </section>
+            </form>
+          </section>
+        </section>
+
+        <form id="trajectory-overview-view" class="overview-grid hidden">
+          <section class="form-block"><header><h2>用户真实目标</h2><small>每条样本只写一次</small></header><textarea name="user_goal" required></textarea></section>
+          <section class="form-block"><header><h2>所需工具</h2><small>逗号分隔</small></header><textarea name="required_tools"></textarea></section>
+          <section class="form-block overview-wide">
+            <header><h2>最终答案核对</h2><small>不写长评语</small></header>
+            <div class="two-fields">
+              <label>任务完成度<select name="completion"><option>完整</option><option>部分</option><option>失败</option></select></label>
+              <label>工具结果支撑<select name="grounding"><option>充分</option><option>部分</option><option>无</option></select></label>
+            </div>
+            <label>证据说明<textarea name="final_evidence"></textarea></label>
+          </section>
+          <section class="form-block overview-wide"><header><h2>整条轨迹的主要问题</h2></header><textarea name="overall_issues"></textarea></section>
+        </form>
+
+        <footer class="workspace-footer">
+          <span id="trajectory-completion" class="validation-state"></span>
+          <div><button id="previous-step" class="button" type="button">上一步</button><button id="save-trajectory-step" class="button button-primary" type="button">保存并进入下一步</button></div>
+        </footer>
+      </main>
+    </section>
+
+    <section id="sao-page" class="page sao-page hidden" aria-label="任务 2.3.3 SAO 转换">
+      <aside class="sao-step-sidebar">
+        <div class="panel-head"><h2>线性决策轨迹</h2><small>一个 Action 对应一条 SAO</small></div>
+        <div id="sao-step-list" class="step-list"></div>
+        <button id="view-trajectory" class="button full-width" type="button">查看完整轨迹分析</button>
+      </aside>
+
+      <section class="evidence-panel">
+        <div class="panel-head"><h2>原始消息与转换证据</h2><small id="sao-evidence-step"></small></div>
+        <div class="evidence-body">
+          <h3>Action 前的可见上下文</h3>
+          <article class="evidence-box"><header><strong>User instruction</strong><span class="tag">固定任务</span></header><p id="sao-user-query"></p></article>
+          <article class="evidence-box"><header><strong>Last observation</strong><span id="sao-last-status" class="tag tag-warn"></span></header><pre id="sao-last-observation"></pre></article>
+          <h3>当前原始消息</h3>
+          <article class="evidence-box"><header><strong>Assistant · Action</strong><span class="tag">自动解析</span></header><pre id="sao-raw-action"></pre></article>
+          <article class="evidence-box"><header><strong>Function · Observation</strong><span class="tag tag-warn">自动关联</span></header><pre id="sao-raw-observation"></pre></article>
+          <h3>从 2.3.2 带入的判断</h3>
+          <article class="carried-analysis"><strong id="carried-label"></strong><p id="carried-analysis"></p></article>
+        </div>
+      </section>
+
+      <main class="sao-editor">
+        <div class="panel-head"><h2 id="sao-editor-title"></h2><small>由原始轨迹生成，可人工修正</small></div>
+        <nav class="editor-tabs" role="tablist" aria-label="SAO视图">
+          <button type="button" data-sao-tab="form" role="tab" aria-selected="true">表单</button>
+          <button type="button" data-sao-tab="json" role="tab">JSON预览</button>
+          <button type="button" data-sao-tab="diff" role="tab">状态差异</button>
+        </nav>
+
+        <form id="sao-form" class="sao-form">
+          <section class="sao-group"><header><h2><b>S</b>State</h2><small>Action执行前</small></header><label>user_query<textarea name="user_query"></textarea></label><div class="two-fields"><label>history_steps<input name="history_steps" type="number" min="0" /></label><label>last_observation.status<select name="last_status"><option>none</option><option>success</option><option>error</option><option>empty</option><option>partial</option></select></label></div><label>last_observation.result<textarea name="last_result" class="monospace"></textarea></label><label>control_feedback<textarea name="control_feedback" class="monospace"></textarea></label></section>
+          <section class="sao-group"><header><h2><b>A</b>Action</h2><small>策略输出</small></header><label>tool_name<input name="tool_name" class="monospace" /></label><label>arguments<textarea name="arguments" class="monospace"></textarea></label></section>
+          <section class="sao-group"><header><h2><b>O</b>Observation</h2><small>环境反馈</small></header><label>status<select name="observation_status"><option>success</option><option>error</option><option>empty</option><option>partial</option></select></label><label>result<textarea name="observation_result" class="monospace"></textarea></label></section>
+          <section class="sao-group"><header><h2>训练标签</h2><small>复用2.3.2结论</small></header><div class="checkbox-row"><label><input name="is_final" type="checkbox" />is_final</label><label><input name="recoverable" type="checkbox" />recoverable</label><label><input name="action_valid" type="checkbox" />action_valid</label></div><div class="two-fields"><label>failure_type<select name="failure_type"></select></label><label>training_use<select name="training_use"><option>sft_positive</option><option>dpo_rejected_candidate</option><option>error_analysis_only</option><option>filter</option></select></label></div></section>
+        </form>
+
+        <section id="sao-json-view" class="editor-view hidden"><textarea id="sao-json-output" class="json-output monospace" readonly></textarea></section>
+        <section id="sao-diff-view" class="editor-view hidden"><div id="state-diff" class="state-diff"></div></section>
+
+        <footer class="workspace-footer"><span id="sao-validation" class="validation-state"></span><div><button id="previous-sao-step" class="button" type="button">上一步</button><button id="save-sao-step" class="button button-primary" type="button">确认并进入下一步</button></div></footer>
+      </main>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
