@@ -1085,6 +1085,251 @@ env.step(
 - Action Input 是 API 参数；
 - 真正影响环境的是 Action 和 Action Input。
 
+#### 2.1 第一层补充：ToolBench 当前 Action 设计
+
+ToolBench 的 Action 不只是模型输出的一段文字，而是一个由动态动作空间、动作提议、解析协议和环境调用共同组成的对象：
+
+~~~text
+候选 functions
+    ↓
+ToolLLaMA / ChatGPT 提出动作
+    ↓
+function name + arguments
+    ↓
+env.step(action_name, action_input)
+~~~
+
+候选动作空间来自：
+
+~~~text
+闭域：query.api_list → env.functions
+开放域：Retriever top-k → env.functions
+~~~
+
+环境还会为每个 episode 追加 Finish。因此 ToolBench 的动作空间不是固定词表，而是随任务动态生成的有限 function 集合。
+
+Action 中实际存在三种语义：
+
+| 内容 | 是否改变环境 | 作用 |
+|------|--------------|------|
+| Thought | 否 | 保存局部推理，支持搜索轨迹 |
+| function name + arguments | 是 | 选择并调用真实工具 |
+| Finish | 是，元动作 | 给出答案或声明放弃重启 |
+
+ToolLLaMA 依赖 ReAct 字符串解析；ChatGPT Function 模型直接返回 function_call。二者最终被适配为同一种环境调用协议。
+
+#### 2.2 第二层：与现代 Agent Action 标准设计的异同
+
+ToolBench 仍符合现代 Action 设计的部分：
+
+~~~text
+动作与最终自然语言答案分离
+动作受候选工具 schema 约束
+工具名称和参数被显式记录
+模型只提出动作，由 Runtime 执行
+Finish 是显式终止动作
+失败动作和成功动作都进入轨迹
+~~~
+
+但它仍有明显的研究原型特征：
+
+~~~text
+Action Input 本质是 JSON 字符串
+ToolLLaMA 依赖 Thought/Action/Action Input 文本切割
+没有统一类型化 Action 类
+没有 action_id、attempt、deadline
+没有 risk_level、required_scope、requires_approval
+没有 idempotency_key、dry_run 和 compensation
+工具名匹配依赖字符串规范化
+模型生成动作与动作可执行之间缺少显式校验层
+~~~
+
+现代 Agent 通常使用以下边界：
+
+~~~text
+Model Output
+    ↓ Parse
+Typed Decision
+    ↓ Validate
+Authorized Action
+    ↓ Approval / Risk Gate
+Executable Command
+    ↓ Executor
+Execution Event
+~~~
+
+推荐的类型化 Action 可以包含：
+
+~~~python
+class ToolAction(TypedDict):
+    action_id: str
+    tool_id: str
+    operation: str
+    arguments: dict
+    timeout_seconds: int
+    idempotency_key: str | None
+    risk_level: str
+    requires_approval: bool
+    retry_policy: dict
+~~~
+
+核心原则是：
+
+> Policy 产生意图明确、可校验的 Decision；Runtime 才把 Decision 转成具有副作用的 Command。
+
+现代终止动作也不应只有 Finish/give_answer，通常还应区分：
+
+~~~text
+Complete(final_answer, evidence)
+NeedMoreInformation(question)
+WaitForApproval(action)
+Handoff(target, context)
+Abort(reason)
+Retry(action_id, repair)
+~~~
+
+#### 2.3 第三层：现代 Action 设计思路和优秀实例
+
+##### Schema-first Tool Action
+
+先定义工具输入输出 schema，再让模型填槽，而不是依赖自由文本切割。
+
+例：订单物流 Agent 生成：
+
+~~~json
+{
+  "type": "tool_call",
+  "action_id": "act_102",
+  "tool_id": "logistics.get_tracking",
+  "arguments": {"order_id": "O-20260812-01"},
+  "risk_level": "read",
+  "requires_approval": false
+}
+~~~
+
+Runtime 使用 JSON Schema 或 Pydantic 校验订单号。参数无效时产生 ValidationFailed Event，不进入真实工具。
+
+##### Command 与 Domain Event 分离
+
+例：退款 Agent。
+
+~~~text
+Policy Decision：RequestRefund(order_id, amount, reason)
+    ↓ Guardrail
+Executable Command：PaymentGateway.refund(...)
+    ↓ Executor
+Domain Event：RefundSucceeded / RefundRejected
+~~~
+
+模型不能直接声称 RefundSucceeded；该事件只能由 Executor 根据真实支付网关结果产生。
+
+##### 副作用动作使用审批和幂等
+
+例：批量邮件 Agent。
+
+~~~text
+生成 SendCampaign Action
+→ 参数校验
+→ 影响范围预览
+→ 用户审批
+→ 以 idempotency_key 执行一次
+→ 记录发送结果
+~~~
+
+DFS 搜索阶段不能让每条候选分支真实发送邮件，只能产生计划或 dry-run；确认后的唯一分支才允许执行。
+
+##### 分层 Action
+
+大动作空间可以按以下层次逐步缩小：
+
+~~~text
+Goal
+→ Skill
+→ Tool
+→ Arguments
+~~~
+
+例：企业故障处理先选择 diagnose_service，再开放日志、指标和 trace 工具；只有进入 recover_service 且审批通过后，才开放回滚工具。
+
+ToolBench 的 Retriever 是这种思想的早期形式，但它通常只在 episode 开始时召回一次工具，不会随 Goal、权限和阶段动态改变动作空间。
+
+#### 2.4 第四层：Action 关联训练模式
+
+| 训练模式 | 数据单位 | 作用 |
+|----------|----------|------|
+| Step SFT / 行为克隆 | 当前 Observation → 正确 ToolAction | 学习下一步工具调用 |
+| Argument SFT | query + tool schema → arguments | 提高参数合法性 |
+| Tool Routing | task + state → tool_id/skill_id | 缩小动作空间 |
+| DPO / Preference | 同一 State 下 chosen Action > rejected Action | 学习低风险、高成功动作 |
+| Action Verifier | State + proposed Action → label/reason | 调用前校验或搜索排序 |
+| Value/Q Model | State + Action → eventual success | 选择值得探索的分支 |
+| Offline/Online RL | trajectory + reliable reward | 优化成功、成本和长度 |
+
+ToolBench 自身主要采用：
+
+~~~text
+DFSDT 生成成功轨迹
+→ train_messages 拆成逐步前缀
+→ Observation/History 预测 Next Action
+→ ToolLLaMA SFT
+~~~
+
+Retriever 训练负责动作空间召回，ToolLLaMA SFT 负责候选集合内的具体动作选择，两者不是同一个训练任务。
+
+#### 2.5 Action 训练和工程注意点
+
+~~~text
+训练和推理必须使用相同 Action Schema
+工具名和参数标准化协议必须一致
+保存 raw model output、parsed action 和 validation result
+不要只保存成功动作，也要保存无效参数及其修复动作
+Action mask 必须反映当前权限和 workflow phase
+不能把模型生成了 Action 当成 Action 已执行
+副作用动作必须有 action_id 和 idempotency_key
+搜索候选与真实执行必须分离
+敏感权限必须由确定性 Runtime 判断
+Finish 应由 Verifier 检查，而不是只相信模型声明
+~~~
+
+训练记录至少应包含：
+
+~~~text
+state/context version
+available tool schemas
+raw model output
+typed action
+validation result
+executed command
+tool result
+retry/repair relation
+terminal outcome
+cost/latency
+human approval
+~~~
+
+#### 2.6 Action 章节结论
+
+ToolBench 当前设计：
+
+~~~text
+Dynamic functions
++ ReAct text / function_call
++ function name and arguments
++ Finish meta-action
++ DFS branch recording
+~~~
+
+现代化方向：
+
+~~~text
+Dynamic Action Space
+→ Typed Decision
+→ Schema Validation
+→ Risk / Permission / Approval
+→ Idempotent Command
+→ Execution Event
+~~~
+
 ### 3. Observation：环境反馈是什么
 
 环境执行动作后返回：
@@ -1131,6 +1376,232 @@ tree_node.observation_code
 ```
 
 模型再根据这些信息决定下一步。
+
+#### 3.1 第一层补充：ToolBench 当前 Observation 设计
+
+ToolBench 的 Observation 实际有两个消费方：
+
+~~~text
+模型 Policy
+    读取 role=function 的 observation 内容
+
+搜索控制器
+    读取 tree_node.observation_code
+~~~
+
+因此同一次工具返回同时承担事实反馈和控制反馈。状态码语义如下：
+
+| 状态码 | 含义 | 控制效果 |
+|-------:|------|----------|
+| 0 | 正常返回 | 继续 |
+| 1 | 不存在的函数名 | 写回幻觉错误 |
+| 2 | 参数或 Finish JSON 错误 | 写回错误 |
+| 3 | Finish/give_answer | terminal |
+| 4 | give_up_and_restart | prune、回溯 |
+| 5 | 超时 | 工具失败 |
+| 6 | API 不工作/404 | 工具失败 |
+| 7–8 | 订阅或授权问题 | 工具失败 |
+| 9–10 | 请求或速率限制 | 延迟、重试或失败 |
+| 11 | API message error | 工具失败 |
+| 12 | 请求发送或响应解析失败 | 工具失败 |
+
+Observation 超过 max_observation_length 后会被截断。observ_compress_method 同时传给后端，但 wrapper 最终仍可能进行字符级截断。
+
+#### 3.2 第二层：与现代 Agent Observation 标准设计的异同
+
+ToolBench 做对的部分：
+
+~~~text
+工具结果进入下一轮 Model Context
+成功和失败都反馈给模型
+原始 response 与控制 status 同时保存
+Observation 绑定具体 function name
+搜索树保留每个分支的 observation
+~~~
+
+与现代实现相比的不足：
+
+~~~text
+Observation 主要是无类型字符串
+error 和 response 没有统一 Error Taxonomy
+status code 混合执行状态、业务结果和搜索控制
+字符截断可能破坏 JSON 和关键字段
+没有 artifact reference、分页和流式结果协议
+没有 provenance、时间戳、latency、cost、trace_id
+没有标记结果是否完整、过期、缓存或重试所得
+模型可见内容与内部执行元数据没有明确分层
+没有针对不可信工具输出的 prompt-injection 隔离
+~~~
+
+现代系统通常区分四层：
+
+~~~text
+Raw Tool Result
+    原始响应、HTTP 状态、headers、trace
+
+Normalized Observation
+    类型化数据、标准错误、provenance
+
+Model Observation
+    经过筛选、压缩、脱敏后提供给模型
+
+Control Event
+    ToolSucceeded / ToolFailed / RateLimited 等 Runtime 事件
+~~~
+
+推荐结构：
+
+~~~python
+class ToolObservation(TypedDict):
+    action_id: str
+    tool_id: str
+    status: str
+    data: dict | list | str | None
+    error: dict | None
+    is_partial: bool
+    artifact_refs: list[str]
+    provenance: dict
+    latency_ms: int
+    cost: float | None
+    retryable: bool
+~~~
+
+完整 Observation 不必全部进入 Prompt。Context Builder 只选择与当前目标相关的数据、标准化错误、必要来源和恢复提示。
+
+#### 3.3 第三层：现代 Observation 设计思路和优秀实例
+
+##### 结果与错误使用判别联合类型
+
+天气工具成功时：
+
+~~~json
+{
+  "type": "tool_succeeded",
+  "action_id": "act_3",
+  "data": {
+    "city": "Shanghai",
+    "temperature_c": 32,
+    "observed_at": "2026-08-12T14:00:00+08:00"
+  },
+  "provenance": {
+    "provider": "weather_service",
+    "freshness_seconds": 120
+  }
+}
+~~~
+
+失败时：
+
+~~~json
+{
+  "type": "tool_failed",
+  "action_id": "act_3",
+  "error": {
+    "code": "RATE_LIMITED",
+    "message": "Retry after 30 seconds",
+    "retry_after_seconds": 30
+  },
+  "retryable": true
+}
+~~~
+
+Policy 可以据此选择等待、换工具或向用户说明，而不必从任意错误文本中猜测。
+
+##### 大结果进入 Artifact Store
+
+SQL 查询返回十万行时：
+
+~~~text
+Raw result → parquet/csv artifact
+
+Model Observation →
+row_count: 100000
+columns: [...]
+preview: 前 20 行
+artifact_ref: artifact://query/123/result.parquet
+~~~
+
+这比字符截断更可靠，也能支持后续工具读取完整结果。
+
+##### Observation 携带 provenance
+
+研究 Agent 的每个事实应关联：
+
+~~~text
+source URL / document id
+retrieved_at
+content hash
+quotation span
+extraction method
+~~~
+
+最终 Verifier 才能检查结论是否被真实工具结果支持。
+
+##### 工具输出按不可信输入处理
+
+网页、邮件和文档可能包含恶意提示。进入模型前应：
+
+~~~text
+标记来源和数据边界
+限制工具输出不能覆盖 system policy
+解析结构化字段而非直接拼接全文
+脱敏凭据和个人信息
+检测或隔离 prompt injection
+~~~
+
+#### 3.4 第四层：Observation 关联训练模式
+
+| 训练模式 | 输入 → 目标 | 作用 |
+|----------|-------------|------|
+| Error-recovery SFT | State + typed error → retry/repair/fallback | 学习错误恢复 |
+| Observation Grounding | Observation → supported answer/action | 减少忽略工具结果 |
+| Process Verifier | State + Observation + Next Action → score | 评估每步合理性 |
+| Result Summarization | large raw result → compact faithful context | 压缩长结果 |
+| Error Classification | raw exception → standard error code | 统一错误 taxonomy |
+| Contrastive Recovery | 有效恢复 > 重复失败或编造结果 | DPO/Ranker |
+| Citation Training | result + sources → cited answer | 提高可验证性 |
+
+错误恢复数据还应记录失败类别、是否可重试、修正后的 Action、是否换用 fallback、重试次数和最终是否恢复。
+
+#### 3.5 Observation 训练和工程注意点
+
+~~~text
+训练和推理的错误表示必须一致
+不要只给模型数字状态码而缺少语义
+截断前先结构化解析，保证 JSON/schema 完整
+Observation 必须与 action_id 对齐
+区分空结果、失败、权限不足和任务本身无答案
+保存 freshness、provenance、latency 和 cost
+大对象使用 artifact reference
+重试结果标记 attempt 和 parent action
+工具输出必须视为不可信数据
+不要把堆栈、密钥和敏感 headers 暴露给模型
+最终答案训练应检查是否由 observation 支持
+~~~
+
+必须防止 train–inference distribution shift。例如训练数据用自然语言表示错误，推理时只返回整数状态码，模型就难以学会正确恢复。
+
+#### 3.6 Observation 章节结论
+
+ToolBench 当前：
+
+~~~text
+API response string
++ integer status code
++ role=function message
++ tree_node observation
+~~~
+
+现代化方向：
+
+~~~text
+Raw Result
+→ Normalize
+→ Typed Observation / Error
+→ Provenance + Artifact
+→ Context Projection
+→ Recovery Decision
+~~~
 
 ### 4. Policy：策略是什么
 
@@ -2716,6 +3187,256 @@ toolbench/inference/server.py
 - rapidapi_wrapper 更像 Agent 环境适配层；
 - server.py / RapidAPI 服务才是真正的工具执行器。
 
+#### 5.1 第一层补充：ToolBench 当前 Executor 职责分解
+
+step() 负责调用 _step() 并限制 Observation 长度；_step() 负责：
+
+~~~text
+识别 Finish
+解析和校验 Finish arguments
+把 function name 映射回 category/tool/api
+构造 tool payload
+选择本地或远程执行路径
+将后端错误映射为 status code
+返回 observation + status
+~~~
+
+映射状态主要保存在：
+
+~~~text
+api_name_reflect
+tool_names
+cate_names
+~~~
+
+最终 payload 包含：
+
+~~~text
+category
+tool_name
+api_name
+tool_input
+strip
+toolbench_key
+rapidapi_key（可选）
+~~~
+
+更准确的职责划分是：
+
+| 执行层次 | ToolBench 对应 |
+|----------|----------------|
+| Environment Adapter | rapidapi_wrapper |
+| Tool Router | _step() 的名称映射和 payload 构造 |
+| Tool Executor | server.py 或远程 ToolBench/RapidAPI 服务 |
+| Result Normalizer | _step() 的错误映射和 JSON 序列化 |
+| Termination Handler | _step() 对 Finish 的处理 |
+
+#### 5.2 第二层：与现代 Agent Tool Executor 标准设计的异同
+
+ToolBench 的合理设计：
+
+~~~text
+模型不直接执行 Python/API
+统一 step 接口隔离模型和工具
+工具 schema 与底层 API 路由分离
+提供 timeout 和错误状态
+支持远程后端与本地自定义 API
+所有调用结果回到统一 Agent loop
+~~~
+
+现代生产系统通常还要求，而 ToolBench 当前缺少：
+
+~~~text
+Tool Registry 和版本管理
+严格输入/输出 schema 校验
+身份、租户、权限与 scope 检查
+人类审批和风险策略
+幂等键、去重和投递语义
+并发、队列、取消和 deadline propagation
+重试、指数退避、熔断、限流与 fallback
+Sandbox、容器、网络和文件权限隔离
+Secrets Provider，不把 key 混入 Agent State
+完整 trace、audit、cost、latency 和 provenance
+结果缓存与 freshness
+副作用补偿或 Saga
+工具健康检查和动态可用性
+~~~
+
+现代 Executor 是受策略控制的执行平面：
+
+~~~text
+Typed Action
+    ↓
+Validate
+    ↓
+Authorize
+    ↓
+Approval / Risk Gate
+    ↓
+Deduplicate / Idempotency
+    ↓
+Schedule / Execute
+    ↓
+Normalize Result
+    ↓
+Emit Event
+~~~
+
+#### 5.3 第三层：现代 Tool Executor 设计思路和优秀实例
+
+##### Tool Registry + Adapter
+
+推荐定义：
+
+~~~python
+class ToolDefinition:
+    tool_id: str
+    version: str
+    input_schema: dict
+    output_schema: dict
+    risk_level: str
+    required_scopes: list[str]
+    timeout_seconds: int
+    retry_policy: dict
+    executor_ref: str
+~~~
+
+Runtime 通过 registry 解析 action.tool_id，再调用统一 adapter。这样比根据字符串后缀查找 API 更容易做版本、权限和测试。
+
+##### 读操作与写操作采用不同策略
+
+企业数据库 Agent：
+
+~~~text
+SELECT
+→ 可自动执行
+→ 只读凭据
+→ 行数和超时限制
+
+UPDATE / DELETE
+→ 先生成影响预览
+→ 要求审批
+→ transaction
+→ commit 前再次校验
+→ 记录审计和补偿信息
+~~~
+
+##### 长任务采用异步 Job
+
+视频转码：
+
+~~~text
+StartTranscode
+→ JobAccepted(job_id)
+→ Agent 进入 WAITING_TOOL
+→ Poll/Webhook
+→ JobCompleted(artifact_ref)
+→ 从 checkpoint 恢复 Agent
+~~~
+
+Executor 必须支持暂停和恢复，而不是让一次模型调用同步等待很久。
+
+##### 搜索与副作用执行隔离
+
+旅行预订：
+
+~~~text
+Search / Planning
+→ BookingProposal
+→ Compare / Verify
+→ User Approval
+→ CommitBooking once
+~~~
+
+ToolBench 的 deepcopy 适合查询工具，但不能回滚付款、发送、删除等外部副作用。
+
+##### Sandboxed Code Executor
+
+代码 Agent 的命令执行器应限制：
+
+~~~text
+workspace root
+network access
+CPU / memory / time
+allowed binaries
+environment variables
+secret exposure
+filesystem mutation
+~~~
+
+结果以 Event 和 Artifact 返回，模型不应直接拥有无限制 shell。
+
+#### 5.4 第四层：Executor 关联训练模式
+
+Executor 本身主要是确定性 Runtime，应以工程测试为主，而不是用模型训练替代可靠性。可训练部分通常位于执行器前后：
+
+| 可训练对象 | 训练任务 |
+|------------|----------|
+| Argument Generator | State → 合法参数 |
+| Tool Router | State → tool_id |
+| Retry/Recovery Policy | Error Event → retry/fallback/abort |
+| Risk Classifier | Action → 风险类别；最终规则仍需硬约束 |
+| Result Normalizer | 非结构化结果 → schema；必须验证 |
+| Cost/Latency Predictor | Action → 预计成本和延迟 |
+| Tool Success Predictor | State + Action → 成功概率 |
+
+可靠 Executor 重点依赖：
+
+~~~text
+schema contract tests
+mock/fake tool tests
+timeout/retry tests
+idempotency tests
+permission tests
+sandbox escape tests
+fault injection
+concurrency tests
+replay tests
+audit completeness tests
+~~~
+
+#### 5.5 Executor 训练和工程注意点
+
+~~~text
+模型不能持有或输出真实密钥
+权限校验必须在 Executor 中重复执行
+不要重试非幂等写操作，除非有幂等键
+超时不等于未执行成功，需要查询最终状态
+工具返回成功不等于任务目标完成
+不要把 retry policy 完全交给 LLM
+区分 transient 与 permanent error
+每个结果必须绑定 action_id 和 attempt
+高风险工具需要审批、dry-run 和影响预览
+搜索分支不能任意执行不可逆副作用
+本地自定义 Python 工具必须隔离运行
+~~~
+
+#### 5.6 Tool Executor 章节结论
+
+ToolBench 当前：
+
+~~~text
+function_call
+→ rapidapi_wrapper._step
+→ name mapping / payload
+→ local server or remote service
+→ JSON response + status
+~~~
+
+现代化方向：
+
+~~~text
+Typed Action
+→ Registry
+→ Validate
+→ Authorize
+→ Approve
+→ Idempotent Execute
+→ Normalize
+→ Event Log / Artifact
+→ Reducer
+~~~
+
 ### 6. Evaluator 和 Feedback：分别是什么
 
 #### 即时 Feedback
@@ -2780,6 +3501,288 @@ toolbench/retrieval/api_evaluator.py
 ```
 
 它使用 NDCG 评估召回 API 是否正确，与 ToolEval 不是同一个 evaluator。
+
+#### 6.1 第一层补充：ToolBench 当前 Feedback 的四个时间尺度
+
+ToolBench 中至少存在四种不同反馈：
+
+| 时间尺度 | 实现 | 作用 |
+|----------|------|------|
+| Step Feedback | observation + status code | 提供事实并控制下一步 |
+| Search Feedback | terminal/pruned、可选 LLM Ranker | 决定展开或回溯 |
+| Terminal Check | Finish + check_success | 判断模型是否声明完成 |
+| Offline Eval | ToolEval、Retriever NDCG | 比较完整 episode 或召回质量 |
+
+推理结果先由 convert_answers.py 和 convert_to_answer_format.py 转换为统一 answer 与 ExecutionGraph 格式。
+
+eval_pass_rate.py 主要检查：
+
+~~~text
+是否存在工具幻觉
+任务是否可解
+答案是否解决任务
+最终是否通过
+~~~
+
+输出包含 query、solvable、available_tools、intermediate_steps、final_step、is_solved、pass_rate_label、reason 和 not_hallucinate。
+
+eval_preference.py 比较 reference model 与 output model 的完整答案轨迹，并进行正反候选顺序比较，以减弱位置偏差。
+
+带 filter 的 DFS 还可以用 LLM Ranker 比较候选分支。这是一种 value-like feedback，但不是来自真实环境 reward，也不是经过校准的 Value Model。
+
+#### 6.2 第二层：与现代 Agent Evaluator/Feedback 标准设计的异同
+
+ToolBench 的合理设计：
+
+~~~text
+Step Feedback 与离线评测分开
+保留完整 Action/Observation 轨迹
+同时评测 pass rate 和 pairwise preference
+Retriever 使用独立检索指标
+对工具幻觉做专项检查
+Evaluator 与被评模型解耦
+~~~
+
+不足之处：
+
+~~~text
+在线完成判断主要相信 Finish
+缺少确定性任务 Verifier
+缺少系统化的逐步 Process Evaluation
+没有统一 reward/score/feedback schema
+LLM-as-Judge 存在随机性、位置偏差和自偏好
+评测依赖较旧模型和 prompt 配置
+pass/fail 难以定位失败发生在哪一步
+没有系统覆盖成本、延迟、安全和副作用
+没有按工具、错误类型和任务复杂度系统切片
+没有明确 evaluator feedback 如何回流训练
+~~~
+
+现代 Evaluator Stack 通常分层：
+
+~~~text
+Deterministic Validators
+    schema、测试、数据库约束、业务规则
+
+Environment Verifier
+    外部世界是否达到目标状态
+
+Process Evaluator
+    每一步是否合法、有效、基于证据
+
+Outcome Evaluator
+    最终答案正确性、完整性和可用性
+
+Safety Evaluator
+    权限、隐私、越权和副作用
+
+Efficiency Evaluator
+    工具次数、token、延迟和成本
+
+LLM Judge
+    难以规则化的语义判断
+
+Human Review
+    高风险、低置信度和抽样质检
+~~~
+
+原则是：能用确定性验证器解决的问题，不应只交给 LLM Judge。
+
+#### 6.3 第三层：现代 Evaluator/Feedback 设计思路和优秀实例
+
+##### 多层 Eval，而不是一个总分
+
+SQL Agent 可以同时评测：
+
+~~~text
+Action Validity：SQL 是否可解析、是否只读
+Execution：是否成功执行
+Result Correctness：是否匹配标准结果
+Safety：是否访问未授权表
+Efficiency：扫描行数、延迟和工具次数
+Final Answer：是否忠实总结查询结果
+~~~
+
+最终答案 Judge 不能替代这些确定性指标。
+
+##### Online Verifier 与 Finish 解耦
+
+文件修改 Agent 在模型声明完成后自动检查：
+
+~~~text
+目标文件是否存在
+修改范围是否符合要求
+单元测试是否通过
+lint/type check 是否通过
+是否修改无关文件
+是否留下未处理错误
+~~~
+
+只有验证通过，State 才从 VERIFYING 转成 COMPLETED；否则生成结构化反馈并进入 REPAIRING。
+
+##### Evaluator 输出可操作 Feedback
+
+不要只返回 score=0，而应返回：
+
+~~~json
+{
+  "verdict": "failed",
+  "failure_stage": "tool_argument",
+  "error_code": "MISSING_REQUIRED_FIELD",
+  "evidence": ["action act_5 omitted order_id"],
+  "repair_hint": "reuse order_id from observation obs_2",
+  "retryable": true
+}
+~~~
+
+这种反馈既能驱动在线修复，也能转换为训练标签。
+
+##### 搜索分支 Value/Reward Model
+
+搜索 Agent 可以训练：
+
+$$
+V(S_t)=P(\text{eventual success}\mid S_t)
+$$
+
+或者：
+
+$$
+Q(S_t,a_t)=\mathbb E[R\mid S_t,a_t]
+$$
+
+代码修复 Agent 可用测试通过率、剩余失败数、静态分析错误和变更风险训练 Ranker，比让通用 LLM 猜哪个分支更可靠。
+
+##### 评测集必须切片
+
+至少按以下维度报告：
+
+~~~text
+单工具 / 多工具
+闭域 / 开放域
+短链 / 长链
+简单参数 / 复杂参数
+正常工具 / 错误恢复
+读操作 / 写操作
+已知工具 / 未见工具
+不同类别和语言
+低风险 / 高风险
+~~~
+
+总 pass rate 会掩盖特定工具或错误恢复的系统性失败。
+
+#### 6.4 第四层：Evaluator/Feedback 关联训练模式
+
+| Feedback | 可形成的训练数据 | 训练方式 |
+|----------|------------------|----------|
+| 成功轨迹 | Observation → Next Action | SFT / 行为克隆 |
+| 好坏候选 | State, chosen, rejected | DPO / Preference Learning |
+| 步骤合法性 | State + Action → label/reason | Process Verifier |
+| 终局成功 | Trajectory → return | RL / Offline RL / Value Model |
+| 错误和修复 | Error Observation → Repair Action | Recovery SFT |
+| 路由命中 | Query → relevant tools | Retriever/Router 训练 |
+| 测试结果 | Candidate → passed/failed/evidence | Verifier / Ranker |
+| 人工修改 | Before → After + rationale | SFT / Preference |
+
+推荐训练闭环：
+
+~~~text
+运行 Agent
+→ 记录完整 State/Action/Observation/Event
+→ 多层 Evaluator 标注
+→ 失败归因和数据切片
+→ 选取高质量成功轨迹
+→ 构造 SFT / Preference / Verification 数据
+→ 更新 Policy / Retriever / Verifier
+→ 固定评测集回归
+→ 新版本灰度与在线监控
+~~~
+
+综合 reward 可以表示为：
+
+$$
+R=
+R_{task\ success}
++\alpha R_{process}
+-\lambda_1 C_{tool}
+-\lambda_2 C_{latency}
+-\lambda_3 C_{invalid}
+-\lambda_4 C_{risk}
+$$
+
+但未经授权付款、删除生产数据、泄露隐私、绕过审批等安全边界必须由 Guardrail/Executor 硬性阻止，不能只设为负 reward。
+
+#### 6.5 Evaluator 与 Feedback 注意点
+
+##### LLM-as-Judge
+
+~~~text
+固定 evaluator 模型和版本
+保存完整 judge prompt
+多次采样并报告方差
+交换候选顺序降低位置偏差
+盲化模型名称
+使用人工标注校准
+检查 judge 与人类的一致率
+防止被评答案中的 prompt injection
+避免被评模型和 judge 的自偏好
+区分任务不可解与 Agent 失败
+保存 reason 和 evidence，而不仅是 label
+~~~
+
+##### 数据泄漏和过拟合
+
+~~~text
+训练轨迹不得混入固定测试集
+搜索生成数据记录 generator 和版本
+不要用测试集 judge feedback 反复调参
+锁定评测工具和运行工具版本
+对未见工具、未见类别单独测试
+避免模型记住 query_id 或模板答案
+~~~
+
+##### 指标体系
+
+建议同时报告：
+
+~~~text
+Task success / pass rate
+Tool selection precision/recall/NDCG
+Argument validity
+Tool hallucination rate
+Error recovery rate
+Grounded final answer rate
+Average tool calls
+Token / latency / monetary cost
+Approval and human-intervention rate
+Safety violation rate
+Success@budget
+~~~
+
+单个 pass rate 无法解释 Agent 为什么成功或失败。
+
+#### 6.6 Evaluator 与 Feedback 章节结论
+
+ToolBench 当前：
+
+~~~text
+Step：observation + status
+Search：可选 LLM Ranker
+Terminal：Finish/check_success
+Retrieval：NDCG
+Outcome：ToolEval pass rate + preference
+~~~
+
+现代化方向：
+
+~~~text
+Typed Events
+→ Deterministic Validators
+→ Online Verifier
+→ Process + Outcome + Safety + Efficiency Eval
+→ Structured Feedback
+→ SFT / DPO / Verifier / Value / RL 数据闭环
+~~~
 
 ## 四、数据组织与预处理流程
 
